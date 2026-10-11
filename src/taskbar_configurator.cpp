@@ -75,7 +75,6 @@ Config g_ui_config;
 
 // These objects are reused across Start/Stop cycles. The engine keeps the
 // image resident, so callback code and hook continuation storage remain valid.
-winrt::com_ptr<IXamlDiagnostics> g_xaml_diagnostics;
 winrt::com_ptr<IVisualTreeService> g_visual_tree;
 winrt::com_ptr<IVisualTreeServiceCallback2> g_observer;
 winrt::com_ptr<IUnknown> g_site_object;
@@ -1226,6 +1225,23 @@ extern "C" void WINAPI MwTaskbarTestRecordForbiddenBstrFree(BSTR) noexcept;
 
 struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
     IVisualTreeServiceCallback2> {
+    explicit VisualTreeWatcher(winrt::com_ptr<IXamlDiagnostics> diagnostics)
+        : diagnostics_(std::move(diagnostics)) {}
+
+    foundation::IInspectable ResolveElement(InstanceHandle handle) const {
+        foundation::IInspectable inspectable{nullptr};
+        // Handles belong to the cache that produced this observer's callbacks.
+        // A later SetSite must not change the cache underneath an older callback.
+        if (!diagnostics_) winrt::throw_hresult(E_UNEXPECTED);
+        const HRESULT result = diagnostics_->GetIInspectableFromHandle(handle,
+            reinterpret_cast<::IInspectable**>(winrt::put_abi(inspectable)));
+        // Windows can release an element between reporting it and resolving it.
+        // Skip this stale notification; the next live element is still usable.
+        if (result == HRESULT_FROM_WIN32(ERROR_NOT_FOUND)) return nullptr;
+        winrt::check_hresult(result);
+        return inspectable;
+    }
+
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(ParentChildRelation,
         VisualElement value, VisualMutationType mutation) noexcept override {
         auto guard = g_call_gate.Enter();
@@ -1242,9 +1258,8 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
         }
         if (g_entries.contains(handle)) return S_OK;
         try {
-            foundation::IInspectable inspectable{nullptr};
-            winrt::check_hresult(g_xaml_diagnostics->GetIInspectableFromHandle(value.Handle,
-                reinterpret_cast<::IInspectable**>(winrt::put_abi(inspectable))));
+            const auto inspectable = ResolveElement(value.Handle);
+            if (!inspectable) return S_OK;
             auto framework = inspectable.try_as<xaml::FrameworkElement>();
             auto ui = inspectable.try_as<xaml::UIElement>();
             if (!framework || !ui) return S_OK;
@@ -1295,6 +1310,9 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
         VisualElementState, LPCWSTR) noexcept override {
         return S_OK;
     }
+
+private:
+    const winrt::com_ptr<IXamlDiagnostics> diagnostics_;
 };
 
 struct DiagnosticsSite : winrt::implements<DiagnosticsSite, IObjectWithSite> {
@@ -1304,9 +1322,10 @@ struct DiagnosticsSite : winrt::implements<DiagnosticsSite, IObjectWithSite> {
         try {
             site.copy_from(value);
             if (!site) return S_OK;
-            g_xaml_diagnostics = site.as<IXamlDiagnostics>();
+            auto diagnostics = site.as<IXamlDiagnostics>();
             g_visual_tree = site.as<IVisualTreeService>();
-            g_observer = winrt::make_self<VisualTreeWatcher>().as<IVisualTreeServiceCallback2>();
+            g_observer = winrt::make_self<VisualTreeWatcher>(std::move(diagnostics))
+                .as<IVisualTreeServiceCallback2>();
             g_site_object = site;
             return S_OK;
         } catch (...) { return winrt::to_hresult(); }
@@ -1390,7 +1409,7 @@ HRESULT UnadviseTree() noexcept {
 }
 
 HRESULT ConnectDiagnostics() noexcept {
-    if (g_visual_tree && g_xaml_diagnostics && g_observer) return S_OK;
+    if (g_visual_tree && g_site_object && g_observer) return S_OK;
     HMODULE module = GetModuleHandleW(L"Windows.UI.Xaml.dll");
     if (!module) return HRESULT_FROM_WIN32(GetLastError());
     using Initialize = HRESULT (WINAPI*)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, CLSID, LPCWSTR);
@@ -1419,7 +1438,7 @@ HRESULT ConnectDiagnostics() noexcept {
             });
             worker.join();
         }
-        if (SUCCEEDED(result) && g_visual_tree && g_xaml_diagnostics && g_observer) return S_OK;
+        if (SUCCEEDED(result) && g_visual_tree && g_site_object && g_observer) return S_OK;
         if (FAILED(result) && result != HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) SetLastError(result);
     }
     return E_FAIL;
@@ -1636,10 +1655,64 @@ MwStatus MW_CALL Stop() {
 } // namespace
 
 #ifdef MW_TASKBAR_CALLBACK_TESTING
+struct DiagnosticCacheFixture : winrt::implements<DiagnosticCacheFixture,
+    IXamlDiagnostics> {
+    explicit DiagnosticCacheFixture(int32_t marker)
+        : object(winrt::box_value(marker)) {}
+
+    HRESULT STDMETHODCALLTYPE GetIInspectableFromHandle(InstanceHandle handle,
+        ::IInspectable** result) noexcept override {
+        if (!result) return E_POINTER;
+        *result = nullptr;
+        if (handle == 101) return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        if (handle == 303) return E_ACCESSDENIED;
+        if (handle != 202) return E_INVALIDARG;
+        return reinterpret_cast<::IUnknown*>(winrt::get_abi(object))
+            ->QueryInterface(__uuidof(::IInspectable), reinterpret_cast<void**>(result));
+    }
+    HRESULT STDMETHODCALLTYPE GetDispatcher(::IInspectable**) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetUiLayer(::IInspectable**) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetApplication(::IInspectable**) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetHandleFromIInspectable(::IInspectable*, InstanceHandle*) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE HitTest(RECT, unsigned int*, InstanceHandle**) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE RegisterInstance(::IInspectable*, InstanceHandle*) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetInitializationData(BSTR*) noexcept override { return E_NOTIMPL; }
+    foundation::IInspectable object;
+};
+
+extern "C" HRESULT __stdcall MwTaskbarTestDiagnosticCacheResolution(
+    uint32_t* expired_skipped, uint32_t* correct_cache,
+    uint32_t* cache_retained, uint32_t* unexpected_error_preserved) noexcept {
+    if (!expired_skipped || !correct_cache || !cache_retained ||
+        !unexpected_error_preserved) return E_POINTER;
+    *expired_skipped = *correct_cache = *cache_retained = *unexpected_error_preserved = 0;
+    try {
+        struct Apartment {
+            Apartment() { winrt::init_apartment(); }
+            ~Apartment() { winrt::uninit_apartment(); }
+        } apartment;
+        auto first = winrt::make_self<DiagnosticCacheFixture>(7).as<IXamlDiagnostics>();
+        auto second = winrt::make_self<DiagnosticCacheFixture>(9).as<IXamlDiagnostics>();
+        auto first_watcher = winrt::make_self<VisualTreeWatcher>(first);
+        auto second_watcher = winrt::make_self<VisualTreeWatcher>(second);
+        *expired_skipped = !first_watcher->ResolveElement(101);
+        *correct_cache = winrt::unbox_value<int32_t>(first_watcher->ResolveElement(202)) == 7 &&
+            winrt::unbox_value<int32_t>(second_watcher->ResolveElement(202)) == 9;
+        first = nullptr;
+        *cache_retained = winrt::unbox_value<int32_t>(first_watcher->ResolveElement(202)) == 7;
+        try {
+            (void)first_watcher->ResolveElement(303);
+        } catch (const winrt::hresult_error& error) {
+            *unexpected_error_preserved = error.code() == E_ACCESSDENIED;
+        }
+        return S_OK;
+    } catch (...) { return winrt::to_hresult(); }
+}
+
 extern "C" HRESULT __stdcall MwTaskbarTestInvokeOnVisualTreeChange(
     VisualElement element) noexcept {
     try {
-        auto watcher = winrt::make_self<VisualTreeWatcher>();
+        auto watcher = winrt::make_self<VisualTreeWatcher>(nullptr);
         return watcher->OnVisualTreeChange({}, element, Add);
     } catch (...) {
         return winrt::to_hresult();

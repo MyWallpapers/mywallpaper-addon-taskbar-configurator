@@ -22,6 +22,9 @@ extern "C" void WINAPI MwTaskbarTestRecordForbiddenBstrFree(BSTR) noexcept {
 
 extern "C" HRESULT __stdcall MwTaskbarTestInvokeOnVisualTreeChange(
     VisualElement element) noexcept;
+extern "C" HRESULT __stdcall MwTaskbarTestDiagnosticCacheResolution(
+    uint32_t* expired_skipped, uint32_t* correct_cache,
+    uint32_t* cache_retained, uint32_t* unexpected_error_preserved) noexcept;
 extern "C" HRESULT __stdcall MwTaskbarTestPartialHandlerRollback(
     uint32_t* registered_before_rollback, uint32_t* attempted_rollback,
     uint32_t* remaining_after_rollback, HRESULT* registration_result) noexcept;
@@ -94,6 +97,20 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     uint32_t registered_before_rollback = 0;
+    uint32_t expired_skipped = 0, correct_cache = 0, cache_retained = 0;
+    uint32_t unexpected_error_preserved = 0;
+    const HRESULT cache_result = MwTaskbarTestDiagnosticCacheResolution(
+        &expired_skipped, &correct_cache, &cache_retained,
+        &unexpected_error_preserved);
+    if (cache_result != S_OK || !expired_skipped || !correct_cache ||
+        !cache_retained || !unexpected_error_preserved) {
+        std::wcerr << L"diagnostic cache resolution failed: HRESULT=0x"
+            << std::hex << cache_result << L", expired=" << expired_skipped
+            << L", correct cache=" << correct_cache << L", retained="
+            << cache_retained << L", real error=" << unexpected_error_preserved << L'\n';
+        return 8;
+    }
+
     uint32_t attempted_rollback = 0;
     uint32_t remaining_after_rollback = 0;
     HRESULT registration_result = S_OK;
