@@ -2,7 +2,7 @@
   "runtime": "native-v1",
   "name": "Taskbar Configurator",
   "description": "Configure the native Windows taskbar XAML surface, controls and pointer animations from MyWallpaper settings.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "deviceSettingsVersion": "1",
   "settings": [
     {
