@@ -50,3 +50,22 @@ target_compile_options(taskbar_config_tests PRIVATE
 
 enable_testing()
 add_test(NAME taskbar_config_contract COMMAND taskbar_config_tests)
+
+add_executable(taskbar_visual_tree_callback_tests
+    src/config.cpp
+    src/taskbar_configurator.cpp
+    tests/visual_tree_callback_tests.cpp)
+target_compile_definitions(taskbar_visual_tree_callback_tests PRIVATE
+    MW_TASKBAR_CALLBACK_TESTING)
+target_link_libraries(taskbar_visual_tree_callback_tests PRIVATE
+    MyWallpaperNativeEngine::SDK
+    windowsapp
+    ole32
+    oleaut32
+    user32)
+target_include_directories(taskbar_visual_tree_callback_tests PRIVATE include)
+target_compile_options(taskbar_visual_tree_callback_tests PRIVATE
+    /utf-8 /W4 /permissive- /EHsc /Zc:preprocessor /Brepro /experimental:deterministic
+    "/pathmap:${CMAKE_CURRENT_SOURCE_DIR}=.")
+add_test(NAME taskbar_visual_tree_callback_contract
+    COMMAND taskbar_visual_tree_callback_tests)
