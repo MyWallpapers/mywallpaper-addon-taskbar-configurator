@@ -42,7 +42,7 @@ XAML Diagnostics connection and cleanup COM calls run on retained worker threads
 
 ## Build
 
-Use Windows 11, Visual Studio 2022 C++ x64 build tools, CMake, Rust 1.94.1 with the `x86_64-pc-windows-msvc` target, and Git. The build script checks out the engine revision recorded in `native/dependencies.lock.json`, builds the DLLs and companion, runs the settings parser tests, and writes a release-ready runtime bundle under `native/out/windows-x86_64/`. To use a separate engine checkout, set `MW_NATIVE_ENGINE_ROOT`; release builds require the exact clean pinned commit. `MW_ALLOW_UNPINNED_ENGINE=1` exists only for local integration testing against an in-progress sibling checkout.
+Use Windows 11, Visual Studio 2022 C++ x64 build tools, CMake, Rustup, and Git. The build script installs the pinned Rust 1.94.1 MSVC toolchain if it is missing, checks out the engine revision recorded in `native/dependencies.lock.json`, builds the DLLs and companion, runs the settings parser tests, and writes a release-ready runtime bundle under `native/out/windows-x86_64/`. To use a separate engine checkout, set `MW_NATIVE_ENGINE_ROOT`; release builds require the exact clean pinned commit. `MW_ALLOW_UNPINNED_ENGINE=1` exists only for local integration testing against an in-progress sibling checkout.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File native/build.ps1

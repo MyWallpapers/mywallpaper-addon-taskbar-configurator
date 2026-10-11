@@ -97,8 +97,16 @@ if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCOD
 if ($LASTEXITCODE -ne 0) { throw "CMake tests failed with exit code $LASTEXITCODE" }
 
 $rustup = (Get-Command rustup.exe -ErrorAction SilentlyContinue).Source
-if (-not $rustup) { throw 'rustup.exe was not found; install the pinned Rust MSVC toolchain.' }
+if (-not $rustup) { throw 'rustup.exe was not found; install Rustup to build the companion.' }
 $rustToolchain = '1.94.1-x86_64-pc-windows-msvc'
+$installedRustToolchains = @(& $rustup toolchain list)
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the installed Rust toolchains.' }
+$rustToolchainPattern = '^' + [regex]::Escape($rustToolchain) + '(?:\s|$)'
+if (-not ($installedRustToolchains | Where-Object { $_ -match $rustToolchainPattern })) {
+    Write-Host "Installing pinned Rust toolchain $rustToolchain."
+    & $rustup toolchain install $rustToolchain --profile minimal --no-self-update
+    if ($LASTEXITCODE -ne 0) { throw "Installing pinned Rust toolchain $rustToolchain failed." }
+}
 $cargoTarget = Join-Path $buildRoot 'cargo-target'
 $previousRustFlags = $env:RUSTFLAGS
 $previousRustupToolchain = $env:RUSTUP_TOOLCHAIN
