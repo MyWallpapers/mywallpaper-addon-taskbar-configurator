@@ -94,6 +94,93 @@ struct UnadviseOperation {
 HANDLE g_unadvise_operation = nullptr;
 UnadviseOperation* g_unadvise_context = nullptr;
 
+struct UiCompletion {
+    UiCompletion() noexcept : event(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
+    ~UiCompletion() { if (event) CloseHandle(event); }
+
+    void Complete(HRESULT value) noexcept {
+        result.store(value, std::memory_order_release);
+        if (event) SetEvent(event);
+    }
+
+    HANDLE event = nullptr;
+    std::atomic<HRESULT> result{E_PENDING};
+};
+
+struct UiCompletionResult {
+    bool had_operation = false;
+    bool completed = false;
+    HRESULT result = S_OK;
+};
+
+class UiCompletionSlot {
+public:
+    using Schedule = std::function<HRESULT(const std::shared_ptr<UiCompletion>&)>;
+
+    UiCompletionResult RunOrJoin(const Schedule& schedule, DWORD timeout_ms) noexcept {
+        std::shared_ptr<UiCompletion> completion;
+        bool should_schedule = false;
+        try {
+            {
+                std::lock_guard lock(mutex_);
+                completion = pending_;
+                if (!completion) {
+                    completion = std::make_shared<UiCompletion>();
+                    if (!completion->event) {
+                        return {false, true, HRESULT_FROM_WIN32(GetLastError())};
+                    }
+                    pending_ = completion;
+                    should_schedule = true;
+                }
+            }
+
+            if (should_schedule) {
+                HRESULT scheduled = E_FAIL;
+                try { scheduled = schedule(completion); }
+                catch (...) { scheduled = winrt::to_hresult(); }
+                if (FAILED(scheduled)) completion->Complete(scheduled);
+            }
+            return WaitAndConsume(completion, timeout_ms);
+        } catch (...) {
+            return {false, true, winrt::to_hresult()};
+        }
+    }
+
+    UiCompletionResult WaitForExisting(DWORD timeout_ms) noexcept {
+        std::shared_ptr<UiCompletion> completion;
+        {
+            std::lock_guard lock(mutex_);
+            completion = pending_;
+        }
+        if (!completion) return {};
+        return WaitAndConsume(completion, timeout_ms);
+    }
+
+private:
+    UiCompletionResult WaitAndConsume(
+        const std::shared_ptr<UiCompletion>& completion, DWORD timeout_ms) noexcept {
+        const DWORD wait = WaitForSingleObject(completion->event, timeout_ms);
+        if (wait != WAIT_OBJECT_0) {
+            const HRESULT failure = wait == WAIT_TIMEOUT
+                ? HRESULT_FROM_WIN32(WAIT_TIMEOUT)
+                : HRESULT_FROM_WIN32(GetLastError());
+            return {true, false, failure};
+        }
+
+        const HRESULT result = completion->result.load(std::memory_order_acquire);
+        {
+            std::lock_guard lock(mutex_);
+            if (pending_ == completion) pending_.reset();
+        }
+        return {true, true, result};
+    }
+
+    std::mutex mutex_;
+    std::shared_ptr<UiCompletion> pending_;
+};
+
+UiCompletionSlot g_cleanup_restore_operation;
+
 struct MotionSettings {
     double hover_scale = 1.0;
     double press_scale = 1.0;
@@ -111,6 +198,7 @@ struct PropertyState {
     foundation::IInspectable desired{nullptr};
     int64_t callback_token = 0;
     bool has_callback = false;
+    bool callback_enabled = false;
 };
 
 struct ElementEntry {
@@ -126,7 +214,11 @@ struct ElementEntry {
     bool matched = false;
 
     bool has_visual = false;
-    bool pointer_handlers = false;
+    bool entered_handler = false;
+    bool exited_handler = false;
+    bool pressed_handler = false;
+    bool released_handler = false;
+    bool pointer_animation_enabled = false;
     bool pointer_inside = false;
     bool pointer_pressed = false;
     bool animation_counted = false;
@@ -144,6 +236,66 @@ struct ElementEntry {
 };
 
 std::map<uint64_t, ElementEntry> g_entries;
+
+template <typename Register>
+HRESULT RegisterTrackedHandler(bool& registered, winrt::event_token& token,
+    Register&& register_handler) noexcept {
+    if (registered) return S_OK;
+    try {
+        token = register_handler();
+        registered = true;
+        return S_OK;
+    } catch (...) {
+        return winrt::to_hresult();
+    }
+}
+
+template <typename Revoke>
+HRESULT RevokeTrackedHandler(bool& registered, Revoke&& revoke_handler) noexcept {
+    if (!registered) return S_OK;
+    try {
+        revoke_handler();
+        registered = false;
+        return S_OK;
+    } catch (...) {
+        return winrt::to_hresult();
+    }
+}
+
+uint64_t PointerHandlerCount(const ElementEntry& entry) noexcept {
+    return static_cast<uint64_t>(entry.entered_handler) +
+        static_cast<uint64_t>(entry.exited_handler) +
+        static_cast<uint64_t>(entry.pressed_handler) +
+        static_cast<uint64_t>(entry.released_handler);
+}
+
+void RecordFirstFailure(HRESULT* first_error, HRESULT result) noexcept {
+    if (first_error && SUCCEEDED(*first_error) && FAILED(result)) *first_error = result;
+}
+
+template <typename RevokeEntered, typename RevokeExited,
+    typename RevokePressed, typename RevokeReleased>
+HRESULT RevokeFourTrackedHandlers(
+    bool& entered_registered, RevokeEntered&& revoke_entered,
+    bool& exited_registered, RevokeExited&& revoke_exited,
+    bool& pressed_registered, RevokePressed&& revoke_pressed,
+    bool& released_registered, RevokeReleased&& revoke_released) noexcept {
+    HRESULT result = S_OK;
+    RecordFirstFailure(&result, RevokeTrackedHandler(entered_registered,
+        std::forward<RevokeEntered>(revoke_entered)));
+    RecordFirstFailure(&result, RevokeTrackedHandler(exited_registered,
+        std::forward<RevokeExited>(revoke_exited)));
+    RecordFirstFailure(&result, RevokeTrackedHandler(pressed_registered,
+        std::forward<RevokePressed>(revoke_pressed)));
+    RecordFirstFailure(&result, RevokeTrackedHandler(released_registered,
+        std::forward<RevokeReleased>(revoke_released)));
+    return result;
+}
+
+bool HasTrackedState(const ElementEntry& entry) noexcept {
+    return !entry.properties.empty() || PointerHandlerCount(entry) != 0 ||
+        entry.has_visual || entry.rotation_saved;
+}
 
 void SetDiagnostic(uint64_t* field, uint64_t value) noexcept {
     InterlockedExchange64(reinterpret_cast<volatile LONG64*>(field),
@@ -470,7 +622,7 @@ void UpdateDiagnostics() {
         const auto& entry = pair.second;
         if (entry.matched) ++matched;
         properties += static_cast<uint64_t>(entry.properties.size());
-        if (entry.pointer_handlers) handlers += 4;
+        handlers += PointerHandlerCount(entry);
         if (entry.animation_counted) ++animations;
     }
     SetDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.matchedElements, matched);
@@ -479,38 +631,108 @@ void UpdateDiagnostics() {
     SetDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.animations, animations);
 }
 
-void RemovePropertyCallback(ElementEntry& entry, PropertyState& state) noexcept {
-    if (!state.has_callback) return;
-    try { entry.element.UnregisterPropertyChangedCallback(state.property, state.callback_token); }
-    catch (...) { SetLastError(winrt::to_hresult()); }
-    state.has_callback = false;
-    state.callback_token = 0;
+HRESULT RemovePropertyCallback(ElementEntry& entry, PropertyState& state) noexcept {
+    state.callback_enabled = false;
+    if (!state.has_callback) return S_OK;
+    try {
+        entry.element.UnregisterPropertyChangedCallback(state.property, state.callback_token);
+        state.has_callback = false;
+        state.callback_token = 0;
+        return S_OK;
+    } catch (...) {
+        const HRESULT error = winrt::to_hresult();
+        SetLastError(error);
+        return error;
+    }
 }
 
 bool IsUnset(const foundation::IInspectable& value) {
     return value == xaml::DependencyProperty::UnsetValue();
 }
 
-void RestoreProperty(ElementEntry& entry, PropertyState& state) {
-    RemovePropertyCallback(entry, state);
+/*
+ * The original value is restored even if callback removal fails. The gate
+ * keeps callbacks from re-entering cleanup, and retained state lets a later
+ * Stop retry the exact failed unregister.
+ */
+HRESULT RestoreProperty(ElementEntry& entry, PropertyState& state) noexcept {
+    HRESULT result = RemovePropertyCallback(entry, state);
     if (state.name == "rotation") {
-        if (entry.has_visual && entry.rotation_saved) {
-            entry.visual.StopAnimation(L"RotationAngle");
-            entry.visual.RotationAngle(entry.original_rotation);
-            entry.rotation_saved = false;
-            IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.restoreCount);
+        if (entry.rotation_saved) {
+            if (!entry.has_visual || !entry.visual) return FAILED(result) ? result : E_PENDING;
+            bool restored = true;
+            try { entry.visual.StopAnimation(L"RotationAngle"); }
+            catch (...) {
+                const HRESULT error = winrt::to_hresult();
+                SetLastError(error);
+                RecordFirstFailure(&result, error);
+                restored = false;
+            }
+            try {
+                entry.visual.RotationAngle(entry.original_rotation);
+                IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.restoreCount);
+            } catch (...) {
+                const HRESULT error = winrt::to_hresult();
+                SetLastError(error);
+                RecordFirstFailure(&result, error);
+                restored = false;
+            }
+            if (restored) {
+                entry.rotation_saved = false;
+            } else if (SUCCEEDED(result)) {
+                result = E_PENDING;
+            }
         }
-        return;
+        if (!entry.rotation_saved && PointerHandlerCount(entry) == 0 && !entry.animation_counted) {
+            entry.has_visual = false;
+            entry.visual = nullptr;
+        }
+        return result;
     }
-    auto object = entry.element.try_as<xaml::DependencyObject>();
-    if (!object) return;
-    if (IsUnset(state.original)) object.ClearValue(state.property);
-    else object.SetValue(state.property, state.original);
-    IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.restoreCount);
+
+    try {
+        auto object = entry.element.try_as<xaml::DependencyObject>();
+        if (!object) return FAILED(result) ? result : E_PENDING;
+        // Once another component installs a binding, it owns the property's
+        // value. Remove our callback, but never overwrite that binding.
+        if (entry.element.GetBindingExpression(state.property)) return result;
+        entry.writing = true;
+        if (IsUnset(state.original)) object.ClearValue(state.property);
+        else object.SetValue(state.property, state.original);
+        entry.writing = false;
+        IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.restoreCount);
+    } catch (...) {
+        entry.writing = false;
+        const HRESULT error = winrt::to_hresult();
+        SetLastError(error);
+        RecordFirstFailure(&result, error);
+    }
+    return result;
 }
 
 void PropertyChanged(uint64_t handle, xaml::DependencyProperty property,
     foundation::IInspectable const& sender) noexcept;
+
+HRESULT RegisterPropertyCallback(ElementEntry& entry, PropertyState& state) noexcept {
+    if (state.has_callback) {
+        state.callback_enabled = true;
+        return S_OK;
+    }
+    try {
+        state.callback_token = entry.element.RegisterPropertyChangedCallback(state.property,
+            [handle = entry.handle, property = state.property](auto const& sender, auto const&) {
+                PropertyChanged(handle, property, sender);
+            });
+        state.has_callback = true;
+        state.callback_enabled = true;
+        return S_OK;
+    } catch (...) {
+        const HRESULT error = winrt::to_hresult();
+        SetLastError(error);
+        state.callback_enabled = false;
+        return error;
+    }
+}
 
 bool ApplyProperty(ElementEntry& entry, PropertyState& desired) {
     if (desired.name == "rotation") {
@@ -538,19 +760,12 @@ bool ApplyProperty(ElementEntry& entry, PropertyState& desired) {
         stored.name = desired.name;
         stored.original = object.ReadLocalValue(stored.property);
         stored.desired = desired.desired;
-        try {
-            stored.callback_token = entry.element.RegisterPropertyChangedCallback(stored.property,
-                [handle = entry.handle, property = stored.property](auto const& sender, auto const&) {
-                    PropertyChanged(handle, property, sender);
-                });
-            stored.has_callback = true;
-        } catch (...) {
-            SetLastError(winrt::to_hresult());
-        }
+        (void)RegisterPropertyCallback(entry, stored);
         entry.properties.push_back(std::move(stored));
         state = std::prev(entry.properties.end());
     } else {
         state->desired = desired.desired;
+        (void)RegisterPropertyCallback(entry, *state);
     }
 
     entry.writing = true;
@@ -559,36 +774,79 @@ bool ApplyProperty(ElementEntry& entry, PropertyState& desired) {
     } catch (...) {
         entry.writing = false;
         SetLastError(winrt::to_hresult());
-        RestoreProperty(entry, *state);
-        entry.properties.erase(state);
+        const HRESULT restored = RestoreProperty(entry, *state);
+        if (SUCCEEDED(restored)) entry.properties.erase(state);
+        else SetLastError(restored);
         return false;
     }
     entry.writing = false;
     return true;
 }
 
-void RestoreVisual(ElementEntry& entry) noexcept {
-    if (!entry.has_visual) return;
+HRESULT RestoreVisual(ElementEntry& entry) noexcept {
+    if (!entry.has_visual) return S_OK;
+    if (!entry.visual) return E_PENDING;
+
+    HRESULT result = S_OK;
+    bool restored = true;
+    try { entry.visual.StopAnimation(L"Scale"); }
+    catch (...) {
+        const HRESULT error = winrt::to_hresult();
+        SetLastError(error);
+        RecordFirstFailure(&result, error);
+        restored = false;
+    }
+    try { entry.visual.StopAnimation(L"Opacity"); }
+    catch (...) {
+        const HRESULT error = winrt::to_hresult();
+        SetLastError(error);
+        RecordFirstFailure(&result, error);
+        restored = false;
+    }
     try {
-        entry.visual.StopAnimation(L"Scale");
-        entry.visual.StopAnimation(L"Opacity");
         entry.visual.Scale(entry.original_scale);
+        IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.restoreCount);
+    } catch (...) {
+        const HRESULT error = winrt::to_hresult();
+        SetLastError(error);
+        RecordFirstFailure(&result, error);
+        restored = false;
+    }
+    try {
         entry.visual.Opacity(entry.original_opacity);
-    } catch (...) { SetLastError(winrt::to_hresult()); }
+        IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.restoreCount);
+    } catch (...) {
+        const HRESULT error = winrt::to_hresult();
+        SetLastError(error);
+        RecordFirstFailure(&result, error);
+        restored = false;
+    }
+
+    if (!restored) return FAILED(result) ? result : E_PENDING;
     entry.pointer_inside = false;
     entry.pointer_pressed = false;
     entry.animation_counted = false;
+    if (!entry.rotation_saved) {
+        entry.has_visual = false;
+        entry.visual = nullptr;
+    }
+    return S_OK;
 }
 
-void RevokePointerHandlers(ElementEntry& entry) noexcept {
-    if (!entry.pointer_handlers) return;
-    try {
-        entry.element.PointerEntered(entry.entered_token);
-        entry.element.PointerExited(entry.exited_token);
-        entry.element.PointerPressed(entry.pressed_token);
-        entry.element.PointerReleased(entry.released_token);
-    } catch (...) { SetLastError(winrt::to_hresult()); }
-    entry.pointer_handlers = false;
+HRESULT RevokePointerHandlers(ElementEntry& entry) noexcept {
+    if (PointerHandlerCount(entry) == 0) return S_OK;
+    if (!entry.element) {
+        SetLastError(E_PENDING);
+        return E_PENDING;
+    }
+
+    const HRESULT result = RevokeFourTrackedHandlers(
+        entry.entered_handler, [&] { entry.element.PointerEntered(entry.entered_token); },
+        entry.exited_handler, [&] { entry.element.PointerExited(entry.exited_token); },
+        entry.pressed_handler, [&] { entry.element.PointerPressed(entry.pressed_token); },
+        entry.released_handler, [&] { entry.element.PointerReleased(entry.released_token); });
+    if (FAILED(result)) SetLastError(result);
+    return result;
 }
 
 void Animate(ElementEntry& entry, bool pressed) {
@@ -655,8 +913,11 @@ void ConfigurePointerHandlers(ElementEntry& entry) {
         std::any_of(g_ui_config.animations.begin(), g_ui_config.animations.end(),
             [&](const auto& animation) { return SelectorMatches(animation.selector, entry); });
     if (!should_animate || !g_ui_config.enabled) {
-        RevokePointerHandlers(entry);
-        RestoreVisual(entry);
+        entry.pointer_animation_enabled = false;
+        const HRESULT revoked = RevokePointerHandlers(entry);
+        const HRESULT restored = RestoreVisual(entry);
+        if (FAILED(revoked)) SetLastError(revoked);
+        if (FAILED(restored)) SetLastError(restored);
         return;
     }
     if (!entry.has_visual) {
@@ -665,42 +926,57 @@ void ConfigurePointerHandlers(ElementEntry& entry) {
         entry.original_opacity = entry.visual.Opacity();
         entry.has_visual = true;
     }
-    if (!entry.pointer_handlers) {
-        const auto handle = entry.handle;
-        entry.entered_token = entry.element.PointerEntered([handle](auto const&, auto const&) {
+    const auto handle = entry.handle;
+    HRESULT result = RegisterTrackedHandler(entry.entered_handler, entry.entered_token, [&] {
+        return entry.element.PointerEntered([handle](auto const&, auto const&) {
             auto guard = g_call_gate.Enter();
             if (!guard) return;
             const auto found = g_entries.find(handle);
-            if (found == g_entries.end()) return;
+            if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
             found->second.pointer_inside = true;
             Animate(found->second, found->second.pointer_pressed);
         });
-        entry.exited_token = entry.element.PointerExited([handle](auto const&, auto const&) {
+    });
+    if (SUCCEEDED(result)) result = RegisterTrackedHandler(entry.exited_handler, entry.exited_token, [&] {
+        return entry.element.PointerExited([handle](auto const&, auto const&) {
             auto guard = g_call_gate.Enter();
             if (!guard) return;
             const auto found = g_entries.find(handle);
-            if (found == g_entries.end()) return;
+            if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
             found->second.pointer_inside = false;
             Animate(found->second, false);
         });
-        entry.pressed_token = entry.element.PointerPressed([handle](auto const&, auto const&) {
+    });
+    if (SUCCEEDED(result)) result = RegisterTrackedHandler(entry.pressed_handler, entry.pressed_token, [&] {
+        return entry.element.PointerPressed([handle](auto const&, auto const&) {
             auto guard = g_call_gate.Enter();
             if (!guard) return;
             const auto found = g_entries.find(handle);
-            if (found == g_entries.end()) return;
+            if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
             found->second.pointer_pressed = true;
             Animate(found->second, true);
         });
-        entry.released_token = entry.element.PointerReleased([handle](auto const&, auto const&) {
+    });
+    if (SUCCEEDED(result)) result = RegisterTrackedHandler(entry.released_handler, entry.released_token, [&] {
+        return entry.element.PointerReleased([handle](auto const&, auto const&) {
             auto guard = g_call_gate.Enter();
             if (!guard) return;
             const auto found = g_entries.find(handle);
-            if (found == g_entries.end()) return;
+            if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
             found->second.pointer_pressed = false;
             Animate(found->second, false);
         });
-        entry.pointer_handlers = true;
+    });
+    if (FAILED(result)) {
+        SetLastError(result);
+        entry.pointer_animation_enabled = false;
+        (void)RevokePointerHandlers(entry);
+        (void)RestoreVisual(entry);
+        entry.matched = HasTrackedState(entry);
+        UpdateDiagnostics();
+        return;
     }
+    entry.pointer_animation_enabled = true;
     const float scale = static_cast<float>(entry.original_scale.x * entry.base_scale);
     entry.visual.Scale(numerics::float3{scale, scale, entry.original_scale.z});
 }
@@ -754,9 +1030,12 @@ void ApplyEntry(ElementEntry& entry) {
         const bool still_desired = std::any_of(desired.begin(), desired.end(),
             [&](const PropertyState& target) { return target.property == it->property; });
         if (still_desired) { ++it; continue; }
-        try { RestoreProperty(entry, *it); }
-        catch (...) { SetLastError(winrt::to_hresult()); }
-        it = entry.properties.erase(it);
+        const HRESULT restored = RestoreProperty(entry, *it);
+        if (SUCCEEDED(restored)) it = entry.properties.erase(it);
+        else {
+            SetLastError(restored);
+            ++it;
+        }
     }
 
     entry.writing = true;
@@ -768,19 +1047,35 @@ void ApplyEntry(ElementEntry& entry) {
 
     ConfigureAdvancedMotion(entry, g_ui_config);
     ConfigurePointerHandlers(entry);
-    entry.matched = !entry.properties.empty() || entry.pointer_handlers;
+    entry.matched = HasTrackedState(entry);
     UpdateDiagnostics();
 }
 
-void RestoreEntry(ElementEntry& entry) noexcept {
-    RevokePointerHandlers(entry);
-    RestoreVisual(entry);
-    for (auto it = entry.properties.rbegin(); it != entry.properties.rend(); ++it) {
-        try { RestoreProperty(entry, *it); }
-        catch (...) { SetLastError(winrt::to_hresult()); }
+HRESULT RestoreEntry(ElementEntry& entry) noexcept {
+    entry.pointer_animation_enabled = false;
+    HRESULT result = RevokePointerHandlers(entry);
+    RecordFirstFailure(&result, RestoreVisual(entry));
+    for (std::size_t index = entry.properties.size(); index > 0; --index) {
+        const HRESULT restored = RestoreProperty(entry, entry.properties[index - 1]);
+        if (SUCCEEDED(restored)) entry.properties.erase(entry.properties.begin() + index - 1);
+        else {
+            SetLastError(restored);
+            RecordFirstFailure(&result, restored);
+        }
     }
-    entry.properties.clear();
-    entry.matched = false;
+    const bool rotation_state_tracked = std::any_of(entry.properties.begin(),
+        entry.properties.end(), [](const PropertyState& property) {
+            return property.name == "rotation";
+        });
+    if (entry.rotation_saved && !rotation_state_tracked) {
+        PropertyState orphaned_rotation;
+        orphaned_rotation.name = "rotation";
+        const HRESULT restored = RestoreProperty(entry, orphaned_rotation);
+        RecordFirstFailure(&result, restored);
+    }
+    entry.matched = HasTrackedState(entry);
+    if (!entry.matched && SUCCEEDED(result)) return S_OK;
+    return FAILED(result) ? result : E_PENDING;
 }
 
 void PropertyChanged(uint64_t handle, xaml::DependencyProperty property,
@@ -793,14 +1088,15 @@ void PropertyChanged(uint64_t handle, xaml::DependencyProperty property,
     if (entry.writing) return;
     const auto state = std::find_if(entry.properties.begin(), entry.properties.end(),
         [&](const PropertyState& candidate) { return candidate.property == property; });
-    if (state == entry.properties.end()) return;
+    if (state == entry.properties.end() || !state->callback_enabled) return;
     try {
         auto object = sender.try_as<xaml::DependencyObject>();
         if (!object) return;
         if (entry.element.GetBindingExpression(property)) {
-            RemovePropertyCallback(entry, *state);
-            entry.properties.erase(state);
-            entry.matched = !entry.properties.empty() || entry.pointer_handlers;
+            const HRESULT removed = RemovePropertyCallback(entry, *state);
+            if (SUCCEEDED(removed)) entry.properties.erase(state);
+            else SetLastError(removed);
+            entry.matched = HasTrackedState(entry);
             UpdateDiagnostics();
             return;
         }
@@ -814,43 +1110,28 @@ void PropertyChanged(uint64_t handle, xaml::DependencyProperty property,
     }
 }
 
-HRESULT DispatchToUi(const std::function<void()>& action, DWORD timeout_ms) noexcept {
-    try {
-        winrt::Windows::UI::Core::CoreDispatcher dispatcher{nullptr};
-        {
-            std::lock_guard lock(g_dispatcher_mutex);
-            if (g_dispatcher) dispatcher = g_dispatcher.get();
-        }
-        if (!dispatcher) return E_PENDING;
-        struct Completion {
-            HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            HRESULT result = E_PENDING;
-            ~Completion() { if (event) CloseHandle(event); }
-        };
-        auto completion = std::make_shared<Completion>();
-        if (!completion->event) return HRESULT_FROM_WIN32(GetLastError());
-        dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
-            [completion, action] {
-                try { action(); completion->result = S_OK; }
-                catch (...) { completion->result = winrt::to_hresult(); }
-                SetEvent(completion->event);
-            });
-        const DWORD wait = WaitForSingleObject(completion->event, timeout_ms);
-        return wait == WAIT_OBJECT_0 ? completion->result :
-            wait == WAIT_TIMEOUT ? HRESULT_FROM_WIN32(WAIT_TIMEOUT) : HRESULT_FROM_WIN32(GetLastError());
-    } catch (...) {
-        return winrt::to_hresult();
-    }
-}
-
 void ApplyAllOnUi() {
     for (auto& pair : g_entries) ApplyEntry(pair.second);
     IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.settingsApplied);
 }
 
+bool ClearApplyQueuedForGeneration(uint64_t generation) noexcept {
+    std::lock_guard lock(g_settings_mutex);
+    if (generation != g_lifecycle_generation.load(std::memory_order_acquire)) return false;
+    g_apply_queued = false;
+    return true;
+}
+
+void AdvanceLifecycleGeneration() noexcept {
+    std::lock_guard lock(g_settings_mutex);
+    g_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
 bool ScheduleSettingsApply(const std::shared_ptr<Config>& config) {
+    uint64_t generation = 0;
     auto queue = [&] {
         std::lock_guard lock(g_settings_mutex);
+        generation = g_lifecycle_generation.load(std::memory_order_acquire);
         g_pending_config = *config;
         ++g_pending_revision;
         if (g_apply_queued) return false;
@@ -858,25 +1139,26 @@ bool ScheduleSettingsApply(const std::shared_ptr<Config>& config) {
         return true;
     }();
     if (!queue) return true;
-    const uint64_t generation = g_lifecycle_generation.load(std::memory_order_acquire);
     winrt::Windows::UI::Core::CoreDispatcher dispatcher{nullptr};
     {
         std::lock_guard lock(g_dispatcher_mutex);
         if (g_dispatcher) dispatcher = g_dispatcher.get();
     }
     if (!dispatcher) {
-        std::lock_guard lock(g_settings_mutex);
-        g_apply_queued = false;
+        (void)ClearApplyQueuedForGeneration(generation);
         return false;
     }
     try {
         dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
             [generation] {
                 auto guard = g_call_gate.Enter();
-                if (!guard || generation != g_lifecycle_generation.load(std::memory_order_acquire)) {
+                {
                     std::lock_guard lock(g_settings_mutex);
-                    g_apply_queued = false;
-                    return;
+                    if (generation != g_lifecycle_generation.load(std::memory_order_acquire)) return;
+                    if (!guard) {
+                        g_apply_queued = false;
+                        return;
+                    }
                 }
                 for (;;) {
                     Config next;
@@ -890,7 +1172,9 @@ bool ScheduleSettingsApply(const std::shared_ptr<Config>& config) {
                     ApplyAllOnUi();
                     std::lock_guard lock(g_settings_mutex);
                     if (revision == g_pending_revision) {
-                        g_apply_queued = false;
+                        if (generation == g_lifecycle_generation.load(std::memory_order_acquire)) {
+                            g_apply_queued = false;
+                        }
                         return;
                     }
                 }
@@ -898,8 +1182,7 @@ bool ScheduleSettingsApply(const std::shared_ptr<Config>& config) {
         return true;
     } catch (...) {
         SetLastError(winrt::to_hresult());
-        std::lock_guard lock(g_settings_mutex);
-        g_apply_queued = false;
+        (void)ClearApplyQueuedForGeneration(generation);
         return false;
     }
 }
@@ -936,21 +1219,15 @@ void Classify(ElementEntry& entry) {
     }
 }
 
-struct CallbackStrings {
-    VisualElement element{};
-    ~CallbackStrings() {
-        SysFreeString(element.SrcInfo.FileName);
-        SysFreeString(element.SrcInfo.Hash);
-        SysFreeString(element.Type);
-        SysFreeString(element.Name);
-    }
-};
+#ifdef MW_TASKBAR_CALLBACK_TESTING
+extern "C" void WINAPI MwTaskbarTestRecordForbiddenBstrFree(BSTR) noexcept;
+#define SysFreeString MwTaskbarTestRecordForbiddenBstrFree
+#endif
 
 struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
     IVisualTreeServiceCallback2> {
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(ParentChildRelation,
         VisualElement value, VisualMutationType mutation) noexcept override {
-        CallbackStrings owned{value};
         auto guard = g_call_gate.Enter();
         if (!guard || !g_active.load(std::memory_order_acquire)) return S_OK;
         if (GetCurrentThreadId() != g_taskbar_thread) return S_OK;
@@ -958,8 +1235,7 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
         if (mutation != Add) {
             const auto found = g_entries.find(handle);
             if (found != g_entries.end()) {
-                RestoreEntry(found->second);
-                g_entries.erase(found);
+                if (SUCCEEDED(RestoreEntry(found->second))) g_entries.erase(found);
                 UpdateDiagnostics();
             }
             return S_OK;
@@ -1170,14 +1446,57 @@ bool ReapStartDiagnosticsOperation(HRESULT* result) noexcept {
     return true;
 }
 
-void RestoreAllOnUi() {
-    for (auto& pair : g_entries) RestoreEntry(pair.second);
-    g_entries.clear();
+HRESULT RestoreAllOnUi() noexcept {
+    HRESULT result = S_OK;
+    for (auto it = g_entries.begin(); it != g_entries.end();) {
+        const HRESULT restored = RestoreEntry(it->second);
+        if (SUCCEEDED(restored) && !HasTrackedState(it->second)) {
+            it = g_entries.erase(it);
+        } else {
+            RecordFirstFailure(&result, FAILED(restored) ? restored : E_PENDING);
+            ++it;
+        }
+    }
     UpdateDiagnostics();
+    if (!g_entries.empty()) return FAILED(result) ? result : E_PENDING;
+    return result;
+}
+
+HRESULT ScheduleRestoreAllOnUi(
+    const std::shared_ptr<UiCompletion>& completion) noexcept {
+    try {
+        winrt::Windows::UI::Core::CoreDispatcher dispatcher{nullptr};
+        {
+            std::lock_guard lock(g_dispatcher_mutex);
+            if (g_dispatcher) dispatcher = g_dispatcher.get();
+        }
+        if (!dispatcher) return E_PENDING;
+        dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
+            [completion] {
+                HRESULT result = E_FAIL;
+                try { result = RestoreAllOnUi(); }
+                catch (...) { result = winrt::to_hresult(); }
+                completion->Complete(result);
+            });
+        return S_OK;
+    } catch (...) {
+        return winrt::to_hresult();
+    }
 }
 
 MwStatus FinishCleanup() noexcept {
     if (g_call_gate.WaitForDrain(kDrainTimeoutMs) != mw_native::CallGate::WaitResult::drained) {
+        SetLastError(E_PENDING);
+        return MW_ERROR_DRAIN_PENDING;
+    }
+
+    // A timed-out UI callback can still be traversing g_entries after its last
+    // erase. Reap the exact operation before reading the map or allowing Start.
+    const UiCompletionResult previous_restore =
+        g_cleanup_restore_operation.WaitForExisting(kUiDispatchTimeoutMs);
+    if (previous_restore.had_operation &&
+        (!previous_restore.completed || FAILED(previous_restore.result))) {
+        SetLastError(previous_restore.result);
         return MW_ERROR_DRAIN_PENDING;
     }
 
@@ -1186,11 +1505,11 @@ MwStatus FinishCleanup() noexcept {
         // UI callbacks from touching g_entries. Restore any styles already
         // applied, but leave COM state alone until the startup worker exits.
         if (!g_entries.empty()) {
-            const HRESULT restored = DispatchToUi(RestoreAllOnUi, kUiDispatchTimeoutMs);
-            if (FAILED(restored)) {
-                SetLastError(restored);
-                return restored == HRESULT_FROM_WIN32(WAIT_TIMEOUT) || restored == E_PENDING
-                    ? MW_ERROR_DRAIN_PENDING : MW_ERROR_ADDON;
+            const UiCompletionResult restored = g_cleanup_restore_operation.RunOrJoin(
+                &ScheduleRestoreAllOnUi, kUiDispatchTimeoutMs);
+            if (!restored.completed || FAILED(restored.result)) {
+                SetLastError(restored.result);
+                return MW_ERROR_DRAIN_PENDING;
             }
         }
         return MW_ERROR_DRAIN_PENDING;
@@ -1199,12 +1518,13 @@ MwStatus FinishCleanup() noexcept {
     const HRESULT unadvise = UnadviseTree();
     if (FAILED(unadvise)) SetLastError(unadvise);
 
-    HRESULT restored = S_OK;
-    if (!g_entries.empty()) restored = DispatchToUi(RestoreAllOnUi, kUiDispatchTimeoutMs);
-    if (FAILED(restored)) {
-        SetLastError(restored);
-        return restored == HRESULT_FROM_WIN32(WAIT_TIMEOUT) || restored == E_PENDING
-            ? MW_ERROR_DRAIN_PENDING : MW_ERROR_ADDON;
+    if (!g_entries.empty()) {
+        const UiCompletionResult result = g_cleanup_restore_operation.RunOrJoin(
+            &ScheduleRestoreAllOnUi, kUiDispatchTimeoutMs);
+        if (!result.completed || FAILED(result.result)) {
+            SetLastError(result.result);
+            return MW_ERROR_DRAIN_PENDING;
+        }
     }
     if (FAILED(unadvise)) return MW_ERROR_DRAIN_PENDING;
 
@@ -1218,6 +1538,7 @@ MwStatus FinishCleanup() noexcept {
     }
     g_taskbar_window = nullptr;
     g_taskbar_thread = 0;
+    SetLastError(S_OK);
     g_cleanup_pending.store(false, std::memory_order_release);
     return MW_OK;
 }
@@ -1228,6 +1549,7 @@ MwStatus MW_CALL Start(const MwHostApi* host, const char* settings_json) {
         g_cleanup_pending.load(std::memory_order_acquire) ||
         !g_call_gate.IsClosed() || g_call_gate.InFlight())
         return MW_ERROR_STATE;
+    SetLastError(S_OK);
     auto parsed = taskbar_config::ParseSettings(settings_json);
     if (!parsed) {
         SetLastError(E_INVALIDARG);
@@ -1240,11 +1562,11 @@ MwStatus MW_CALL Start(const MwHostApi* host, const char* settings_json) {
     g_ui_config = parsed.config;
     {
         std::lock_guard lock(g_settings_mutex);
+        g_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
         g_pending_config = parsed.config;
         g_pending_revision = 0;
         g_apply_queued = false;
     }
-    g_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
     if (!g_call_gate.Open()) return MW_ERROR_STATE;
     g_active.store(true, std::memory_order_release);
 
@@ -1264,7 +1586,7 @@ MwStatus MW_CALL Start(const MwHostApi* host, const char* settings_json) {
         } else {
             g_active.store(false, std::memory_order_release);
             g_cleanup_pending.store(true, std::memory_order_release);
-            g_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+            AdvanceLifecycleGeneration();
             g_call_gate.Close();
             SetLastError(wait == WAIT_TIMEOUT
                 ? HRESULT_FROM_WIN32(WAIT_TIMEOUT)
@@ -1278,6 +1600,7 @@ MwStatus MW_CALL Start(const MwHostApi* host, const char* settings_json) {
         g_call_gate.Close();
         SetLastError(result);
         const MwStatus cleanup = FinishCleanup();
+        if (cleanup == MW_OK) SetLastError(result);
         return cleanup == MW_OK ? MW_ERROR_ADDON : cleanup;
     }
     IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.settingsApplied);
@@ -1305,12 +1628,241 @@ MwStatus MW_CALL Stop() {
     if (!was_active && !g_cleanup_pending.load(std::memory_order_acquire)) return MW_OK;
     if (was_active) {
         g_cleanup_pending.store(true, std::memory_order_release);
-        g_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+        AdvanceLifecycleGeneration();
     }
     g_call_gate.Close();
     return FinishCleanup();
 }
 } // namespace
+
+#ifdef MW_TASKBAR_CALLBACK_TESTING
+extern "C" HRESULT __stdcall MwTaskbarTestInvokeOnVisualTreeChange(
+    VisualElement element) noexcept {
+    try {
+        auto watcher = winrt::make_self<VisualTreeWatcher>();
+        return watcher->OnVisualTreeChange({}, element, Add);
+    } catch (...) {
+        return winrt::to_hresult();
+    }
+}
+
+extern "C" HRESULT __stdcall MwTaskbarTestPartialHandlerRollback(
+    uint32_t* registered_before_rollback, uint32_t* attempted_rollback,
+    uint32_t* remaining_after_rollback, HRESULT* registration_result) noexcept {
+    if (!registered_before_rollback || !attempted_rollback ||
+        !remaining_after_rollback || !registration_result) return E_POINTER;
+    bool registered[4]{};
+    winrt::event_token tokens[4]{};
+    *registration_result = RegisterTrackedHandler(registered[0], tokens[0],
+        [] { return winrt::event_token{}; });
+    if (SUCCEEDED(*registration_result)) {
+        *registration_result = RegisterTrackedHandler(registered[1], tokens[1],
+            [] { return winrt::event_token{}; });
+    }
+    if (SUCCEEDED(*registration_result)) {
+        *registration_result = RegisterTrackedHandler(registered[2], tokens[2],
+            []() -> winrt::event_token { throw winrt::hresult_error(E_FAIL); });
+    }
+    *registered_before_rollback = 0;
+    for (uint32_t index = 0; index < 4; ++index) {
+        if (registered[index]) *registered_before_rollback |= (1u << index);
+    }
+    *attempted_rollback = 0;
+    const HRESULT rollback = RevokeFourTrackedHandlers(
+        registered[0], [&] { *attempted_rollback |= 1u; },
+        registered[1], [&] { *attempted_rollback |= 2u; },
+        registered[2], [&] { *attempted_rollback |= 4u; },
+        registered[3], [&] { *attempted_rollback |= 8u; });
+    *remaining_after_rollback = 0;
+    for (uint32_t index = 0; index < 4; ++index) {
+        if (registered[index]) *remaining_after_rollback |= (1u << index);
+    }
+    return rollback;
+}
+
+extern "C" HRESULT __stdcall MwTaskbarTestIndependentHandlerRevocation(
+    uint32_t* first_attempted, uint32_t* first_remaining,
+    uint32_t* retry_attempted, uint32_t* final_remaining) noexcept {
+    if (!first_attempted || !first_remaining || !retry_attempted ||
+        !final_remaining) return E_POINTER;
+    bool registered[4]{true, true, true, true};
+    *first_attempted = 0;
+    const HRESULT first = RevokeFourTrackedHandlers(
+        registered[0], [&] { *first_attempted |= 1u; },
+        registered[1], [&] { *first_attempted |= 2u; throw winrt::hresult_error(E_FAIL); },
+        registered[2], [&] { *first_attempted |= 4u; },
+        registered[3], [&] { *first_attempted |= 8u; });
+    *first_remaining = 0;
+    for (uint32_t index = 0; index < 4; ++index) {
+        if (registered[index]) *first_remaining |= (1u << index);
+    }
+    *retry_attempted = 0;
+    const HRESULT retry = RevokeFourTrackedHandlers(
+        registered[0], [&] { *retry_attempted |= 1u; },
+        registered[1], [&] { *retry_attempted |= 2u; },
+        registered[2], [&] { *retry_attempted |= 4u; },
+        registered[3], [&] { *retry_attempted |= 8u; });
+    *final_remaining = 0;
+    for (uint32_t index = 0; index < 4; ++index) {
+        if (registered[index]) *final_remaining |= (1u << index);
+    }
+    if (FAILED(first)) return first;
+    return retry;
+}
+
+extern "C" HRESULT __stdcall MwTaskbarTestLateCleanupCompletion(
+    uint32_t* scheduled_count, uint32_t* timeout_before_callback,
+    uint32_t* timeout_during_diagnostics, uint32_t* map_reads_after_initial_stop,
+    uint32_t* map_reads_after_pending_retries,
+    uint32_t* map_reads_after_completion, uint32_t* diagnostics_reads,
+    uint32_t* start_allowed_before_completion,
+    uint32_t* start_allowed_after_completion) noexcept {
+    if (!scheduled_count || !timeout_before_callback ||
+        !timeout_during_diagnostics || !map_reads_after_initial_stop ||
+        !map_reads_after_pending_retries || !map_reads_after_completion ||
+        !diagnostics_reads || !start_allowed_before_completion ||
+        !start_allowed_after_completion) return E_POINTER;
+    *scheduled_count = 0;
+    *timeout_before_callback = 0;
+    *timeout_during_diagnostics = 0;
+    *map_reads_after_initial_stop = 0;
+    *map_reads_after_pending_retries = 0;
+    *map_reads_after_completion = 0;
+    *diagnostics_reads = 0;
+    *start_allowed_before_completion = 0;
+    *start_allowed_after_completion = 0;
+
+    struct TestEvent {
+        HANDLE value = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        ~TestEvent() { if (value) CloseHandle(value); }
+    } entered, finish_diagnostics;
+    if (!entered.value || !finish_diagnostics.value) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    UiCompletionSlot slot;
+    std::function<void()> queued_callback;
+    std::map<uint32_t, uint32_t> simulated_entries{{1, 1}};
+    bool simulated_cleanup_pending = true;
+    uint32_t safe_map_reads = 0;
+    const auto schedule = [&](const std::shared_ptr<UiCompletion>& completion) -> HRESULT {
+        ++*scheduled_count;
+        queued_callback = [&, completion] {
+            simulated_entries.clear();
+            SetEvent(entered.value);
+            const DWORD wait = WaitForSingleObject(finish_diagnostics.value, 5000);
+            if (wait != WAIT_OBJECT_0) {
+                completion->Complete(HRESULT_FROM_WIN32(wait == WAIT_TIMEOUT
+                    ? WAIT_TIMEOUT : GetLastError()));
+                return;
+            }
+            (void)simulated_entries.empty(); // mirrors the trailing diagnostics map walk
+            ++*diagnostics_reads;
+            completion->Complete(S_OK);
+        };
+        return S_OK;
+    };
+    const auto stop_retry = [&]() -> bool {
+        const UiCompletionResult previous = slot.WaitForExisting(25);
+        if (previous.had_operation &&
+            (!previous.completed || FAILED(previous.result))) {
+            return false; // FinishCleanup returns before inspecting g_entries.
+        }
+        ++safe_map_reads;
+        if (simulated_entries.empty()) {
+            simulated_cleanup_pending = false;
+            return true;
+        }
+
+        const UiCompletionResult restore = slot.RunOrJoin(schedule, 25);
+        if (!restore.completed || FAILED(restore.result)) return false;
+        ++safe_map_reads;
+        if (simulated_entries.empty()) {
+            simulated_cleanup_pending = false;
+            return true;
+        }
+        return false;
+    };
+
+    if (stop_retry()) return E_UNEXPECTED;
+    ++*timeout_before_callback;
+    *map_reads_after_initial_stop = safe_map_reads;
+    if (*scheduled_count != 1 || safe_map_reads != 1 || !simulated_cleanup_pending) return E_FAIL;
+
+    if (stop_retry()) return E_UNEXPECTED;
+    ++*timeout_before_callback;
+    if (*scheduled_count != 1 || safe_map_reads != 1 || !simulated_cleanup_pending) return E_FAIL;
+
+    std::thread callback_thread;
+    try {
+        callback_thread = std::thread(queued_callback);
+    } catch (...) {
+        SetEvent(finish_diagnostics.value);
+        return E_OUTOFMEMORY;
+    }
+    const DWORD entered_wait = WaitForSingleObject(entered.value, 2000);
+    if (entered_wait != WAIT_OBJECT_0) {
+        SetEvent(finish_diagnostics.value);
+        callback_thread.join();
+        return HRESULT_FROM_WIN32(entered_wait == WAIT_TIMEOUT
+            ? WAIT_TIMEOUT : GetLastError());
+    }
+
+    if (stop_retry()) {
+        SetEvent(finish_diagnostics.value);
+        callback_thread.join();
+        return E_UNEXPECTED;
+    }
+    ++*timeout_during_diagnostics;
+    *map_reads_after_pending_retries = safe_map_reads;
+    *start_allowed_before_completion = simulated_cleanup_pending ? 0u : 1u;
+    if (*scheduled_count != 1 || safe_map_reads != 1 || !simulated_cleanup_pending) {
+        SetEvent(finish_diagnostics.value);
+        callback_thread.join();
+        return E_FAIL;
+    }
+
+    SetEvent(finish_diagnostics.value);
+    callback_thread.join();
+    const bool cleanup_complete = stop_retry();
+    *map_reads_after_completion = safe_map_reads;
+    *start_allowed_after_completion = simulated_cleanup_pending ? 0u : 1u;
+    if (!cleanup_complete || *scheduled_count != 1 || *diagnostics_reads != 1 ||
+        *map_reads_after_initial_stop != 1 ||
+        *map_reads_after_pending_retries != 1 ||
+        *map_reads_after_completion != 2 ||
+        *start_allowed_before_completion != 0 ||
+        *start_allowed_after_completion != 1) return E_FAIL;
+    return S_OK;
+}
+
+extern "C" HRESULT __stdcall MwTaskbarTestStaleApplyGeneration(
+    uint32_t* stale_preserved_queue, uint32_t* current_cleared_queue) noexcept {
+    if (!stale_preserved_queue || !current_cleared_queue) return E_POINTER;
+    const uint64_t previous_generation = g_lifecycle_generation.load(std::memory_order_acquire);
+    bool previous_queued = false;
+    {
+        std::lock_guard lock(g_settings_mutex);
+        previous_queued = g_apply_queued;
+        g_lifecycle_generation.store(17, std::memory_order_release);
+        g_apply_queued = true;
+    }
+    (void)ClearApplyQueuedForGeneration(16);
+    {
+        std::lock_guard lock(g_settings_mutex);
+        *stale_preserved_queue = g_apply_queued ? 1u : 0u;
+    }
+    (void)ClearApplyQueuedForGeneration(17);
+    {
+        std::lock_guard lock(g_settings_mutex);
+        *current_cleared_queue = g_apply_queued ? 0u : 1u;
+        g_apply_queued = previous_queued;
+        g_lifecycle_generation.store(previous_generation, std::memory_order_release);
+    }
+    return (*stale_preserved_queue == 1 && *current_cleared_queue == 1)
+        ? S_OK : E_FAIL;
+}
+#endif
 
 extern "C" __declspec(dllexport) MwTaskbarConfiguratorDiagnostics
     MwTaskbarConfiguratorDiagnosticsBlock = {1, 0, 0, 0, 0, 0, 0, 0, 0};
