@@ -1,0 +1,8 @@
+/build/
+/native/out/
+/.mywallpaper/
+*.user
+*.suo
+*.pdb
+*.ilk
+*.obj

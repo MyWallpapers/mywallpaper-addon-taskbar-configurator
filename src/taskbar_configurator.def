@@ -1,0 +1,4 @@
+LIBRARY addon
+EXPORTS
+    DllGetClassObject=MwTaskbarConfiguratorGetClassObject PRIVATE
+    DllCanUnloadNow=MwTaskbarConfiguratorCanUnloadNow PRIVATE

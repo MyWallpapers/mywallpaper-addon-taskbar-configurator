@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "addon": {
+    "library": "addon.dll"
+  },
+  "agent": "mw-native-agent.dll",
+  "target": {
+    "imageName": "explorer.exe",
+    "windowClass": "Shell_TrayWnd"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "native": {
+    "builds": [
+      {
+        "id": "windows-x86_64",
+        "command": "powershell.exe",
+        "args": [
+          "-NoLogo",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "native/build.ps1"
+        ],
+        "cwd": ".",
+        "outputs": [
+          "native/out/windows-x86_64/companion.exe",
+          "native/out/windows-x86_64/mw-native-agent.dll",
+          "native/out/windows-x86_64/addon.dll",
+          "native/out/windows-x86_64/mywallpaper-native-engine.json",
+          "native/out/windows-x86_64/LICENSE",
+          "native/out/windows-x86_64/THIRD_PARTY_NOTICES.md",
+          "native/out/windows-x86_64/notices"
+        ]
+      }
+    ]
+  }
+}

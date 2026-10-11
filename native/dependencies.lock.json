@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "engine": {
+    "repository": "https://github.com/MyWallpapers/mywallpaper-native-engine.git",
+    "revision": "0f6ee9124b8ea3570f87566e03c02bf4d15fd0c0"
+  }
+}
