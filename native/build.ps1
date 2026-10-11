@@ -91,7 +91,7 @@ if ($env:MW_MINHOOK_SOURCE) { $configureArgs += "-DMW_MINHOOK_SOURCE=$env:MW_MIN
 & $cmake @configureArgs
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
 
-& $cmake --build $buildRoot --config Release --target taskbar_configurator mw_native_agent taskbar_config_tests
+& $cmake --build $buildRoot --config Release --target taskbar_configurator mw_native_agent taskbar_config_tests taskbar_visual_tree_callback_tests
 if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCODE" }
 & $cmake --build $buildRoot --config Release --target RUN_TESTS
 if ($LASTEXITCODE -ne 0) { throw "CMake tests failed with exit code $LASTEXITCODE" }
