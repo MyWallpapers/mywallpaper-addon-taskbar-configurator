@@ -1182,6 +1182,17 @@ MwStatus FinishCleanup() noexcept {
     }
 
     if (g_start_operation && !ReapStartDiagnosticsOperation(nullptr)) {
+        // The closed and drained call gate prevents both XAML observation and
+        // UI callbacks from touching g_entries. Restore any styles already
+        // applied, but leave COM state alone until the startup worker exits.
+        if (!g_entries.empty()) {
+            const HRESULT restored = DispatchToUi(RestoreAllOnUi, kUiDispatchTimeoutMs);
+            if (FAILED(restored)) {
+                SetLastError(restored);
+                return restored == HRESULT_FROM_WIN32(WAIT_TIMEOUT) || restored == E_PENDING
+                    ? MW_ERROR_DRAIN_PENDING : MW_ERROR_ADDON;
+            }
+        }
         return MW_ERROR_DRAIN_PENDING;
     }
 
