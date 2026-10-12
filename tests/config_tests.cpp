@@ -1,6 +1,7 @@
 #include "taskbar_config.hpp"
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -91,11 +92,60 @@ void TestValidation() {
     Check(advanced.config.rules.size() == 1, "advanced selector rule retained");
     Check(advanced.config.animations.size() == 1, "advanced animation retained");
 }
+void TestGeometryAndManifest(const char* manifest_path) {
+    auto settings = FullDefaults();
+    settings["surfaceWidthMode"] = "content";
+    settings["surfaceAlignment"] = "center";
+    settings["surfaceOffsetX"] = -12;
+    settings["buttonRotationDegrees"] = 25;
+    settings["indicatorVisible"] = false;
+    auto parsed = ParseSettingsJson(settings);
+    Check(static_cast<bool>(parsed), "geometry and visibility parse independently of a legacy palette");
+    Check(parsed.config.surface_width_mode == "content" &&
+        parsed.config.surface_alignment == "center" &&
+        parsed.config.surface_offset_x == -12 &&
+        parsed.config.button_rotation_degrees == 25 &&
+        !parsed.config.indicator_visible, "geometry survives legacy palette application");
+    for (const auto& invalid : {Json{{"surfaceWidthMode", "unknown"}},
+        Json{{"surfaceAlignment", "top"}}, Json{{"buttonRotationDegrees", 181}},
+        Json{{"surfaceWidth", 0}}, Json{{"surfaceHeight", 97}},
+        Json{{"indicatorVisible", "false"}}}) {
+        auto candidate = settings;
+        candidate.update(invalid);
+        Check(!ParseSettingsJson(candidate), "unsupported geometry is rejected before XAML application");
+    }
+    settings["advancedProfileJson"] = R"({"schemaVersion":1,"rules":[{"selector":{"name":"TaskbarFrame"},"properties":{"width":"auto","height":"auto","rotation":30}}]})";
+    Check(static_cast<bool>(ParseSettingsJson(settings)), "automatic XAML dimensions are accepted");
+    settings["advancedProfileJson"] = R"({"schemaVersion":1,"rules":[{"selector":{"name":"TaskbarFrame"},"properties":{"width":"stretch"}}]})";
+    Check(!ParseSettingsJson(settings), "only the automatic dimension keyword is accepted");
+
+    std::ifstream stream(manifest_path);
+    Check(stream.good(), "published manifest can be read");
+    if (!stream.good()) return;
+    const Json manifest = Json::parse(stream);
+    Json defaults = Json::object();
+    for (const auto& definition : manifest["settings"]) {
+        if (definition.contains("default")) defaults[definition["id"].get<std::string>()] = definition["default"];
+    }
+    Check(static_cast<bool>(ParseSettingsJson(defaults)), "all published defaults reach the production parser");
+    for (const auto& preset : manifest["presets"]) {
+        auto candidate = defaults;
+        candidate.update(preset["settings"]);
+        auto config = ParseSettingsJson(candidate);
+        Check(static_cast<bool>(config), "every published preset reaches the production parser");
+        Check(config.config.profile == taskbar_config::Profile::custom,
+            "published presets leave colors editable rather than freezing a palette");
+        candidate["surfaceColor"] = "#12345678";
+        Check(ParseSettingsJson(candidate).config.surface_color == "#12345678",
+            "a color edit after a preset remains effective");
+    }
+}
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     TestDefaultsAndPresets();
     TestValidation();
+    if (argc > 1) TestGeometryAndManifest(argv[1]);
     if (failures) return EXIT_FAILURE;
     std::cout << "Configuration contract tests passed.\n";
     return EXIT_SUCCESS;

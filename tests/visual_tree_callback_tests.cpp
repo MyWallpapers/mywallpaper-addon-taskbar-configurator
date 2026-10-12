@@ -40,8 +40,19 @@ extern "C" HRESULT __stdcall MwTaskbarTestLateCleanupCompletion(
     uint32_t* start_allowed_after_completion) noexcept;
 extern "C" HRESULT __stdcall MwTaskbarTestStaleApplyGeneration(
     uint32_t* stale_preserved_queue, uint32_t* current_cleared_queue) noexcept;
+extern "C" HRESULT __stdcall MwTaskbarTestRotationAndAutoDimension() noexcept;
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wcscmp(argv[1], L"--composition") == 0) {
+        const HRESULT result = MwTaskbarTestRotationAndAutoDimension();
+        if (result != S_OK) {
+            std::wcerr << L"rotation degrees, original restoration or automatic width failed: 0x"
+                << std::hex << result << L'\n';
+            return 8;
+        }
+        std::wcout << L"Composition degrees and original restoration; automatic XAML width verified\n";
+        return 0;
+    }
     unsigned expected_free_calls = 0;
     if (argc != 1) {
         if (argc != 3 || std::wcscmp(argv[1], L"--expect-free-calls") != 0) {

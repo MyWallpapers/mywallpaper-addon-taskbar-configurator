@@ -2,8 +2,8 @@
   "runtime": "native-v1",
   "name": "Taskbar Configurator",
   "description": "Configure the native Windows taskbar XAML surface, controls and pointer animations from MyWallpaper settings.",
-  "version": "0.1.6",
-  "deviceSettingsVersion": "1",
+  "version": "0.1.7",
+  "deviceSettingsVersion": "2",
   "settings": [
     {
       "id": "enabled",
@@ -16,132 +16,689 @@
     {
       "id": "profile",
       "type": "select",
-      "label": "Palette profile",
-      "description": "Choose a starting palette. Select Custom to edit the color, surface and shape controls below.",
-      "default": "glass",
+      "label": "Palette mode",
+      "description": "Presets select Custom so every value stays editable. Legacy palettes retain older configurations and lock their palette controls. Choose a preset above to customize them.",
+      "default": "custom",
       "options": [
-        { "value": "neutral", "label": "Neutral dark" },
-        { "value": "glass", "label": "Glass" },
-        { "value": "rose", "label": "Rose" },
-        { "value": "midnight", "label": "Midnight" },
-        { "value": "mint", "label": "Mint" },
-        { "value": "custom", "label": "Custom" }
+        {
+          "value": "custom",
+          "label": "Custom · editable"
+        },
+        {
+          "value": "neutral",
+          "label": "Neutral dark"
+        },
+        {
+          "value": "glass",
+          "label": "Glass"
+        },
+        {
+          "value": "rose",
+          "label": "Rose"
+        },
+        {
+          "value": "midnight",
+          "label": "Midnight"
+        },
+        {
+          "value": "mint",
+          "label": "Mint"
+        }
       ],
       "scope": "device"
     },
-    { "id": "surfaceSection", "type": "section", "label": "Taskbar surface" },
     {
-      "id": "surfaceColor", "type": "color", "label": "Surface color",
-      "description": "XAML color in #RRGGBBAA format.", "default": "#1B2330FF", "alpha": true,
-      "scope": "device", "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "layoutSection",
+      "type": "section",
+      "label": "Layout and position",
+      "description": "Change the existing taskbar content inside its Windows window. Other screen edges depend on Windows support."
     },
     {
-      "id": "surfaceOpacity", "type": "range", "label": "Surface opacity",
-      "default": 0.94, "min": 0, "max": 1, "step": 0.01, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceWidthMode",
+      "type": "select",
+      "label": "Taskbar width",
+      "default": "native",
+      "options": [
+        {
+          "value": "native",
+          "label": "Windows width"
+        },
+        {
+          "value": "content",
+          "label": "Fit content · dock"
+        },
+        {
+          "value": "fixed",
+          "label": "Custom width"
+        }
+      ],
+      "scope": "device",
+      "parent": "layoutSection",
+      "description": "Content width follows the native XAML layout. Windows can still reserve empty space for widgets and the system tray."
     },
     {
-      "id": "surfaceRadius", "type": "range", "label": "Surface corner radius",
-      "default": 14, "min": 0, "max": 64, "step": 1, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceWidth",
+      "type": "range",
+      "label": "Custom width (px)",
+      "default": 960,
+      "min": 240,
+      "max": 4096,
+      "step": 8,
+      "scope": "device",
+      "parent": "layoutSection",
+      "description": "Keep enough space for app buttons and the system tray; Windows clips content outside its taskbar window.",
+      "showIf": {
+        "setting": "surfaceWidthMode",
+        "equals": "fixed"
+      }
     },
     {
-      "id": "surfaceInsetHorizontal", "type": "range", "label": "Surface horizontal inset",
-      "default": 0, "min": -64, "max": 64, "step": 1, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceAlignment",
+      "type": "select",
+      "label": "Taskbar content alignment",
+      "default": "native",
+      "options": [
+        {
+          "value": "native",
+          "label": "Windows alignment"
+        },
+        {
+          "value": "left",
+          "label": "Left"
+        },
+        {
+          "value": "center",
+          "label": "Center"
+        },
+        {
+          "value": "right",
+          "label": "Right"
+        }
+      ],
+      "scope": "device",
+      "parent": "layoutSection",
+      "description": "Moves the taskbar content, without changing the Windows screen edge or reserved work area."
     },
     {
-      "id": "surfaceInsetVertical", "type": "range", "label": "Surface vertical inset",
-      "default": 0, "min": -64, "max": 64, "step": 1, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
-    },
-    { "id": "buttonSection", "type": "section", "label": "Taskbar buttons" },
-    {
-      "id": "buttonBackgroundColor", "type": "color", "label": "Button background",
-      "default": "#00000000", "alpha": true, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
-    },
-    {
-      "id": "buttonForegroundColor", "type": "color", "label": "Button foreground",
-      "default": "#FFFFFFFF", "alpha": true, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceHeight",
+      "type": "range",
+      "label": "Content height (px · 0 = Windows)",
+      "default": 0,
+      "min": 0,
+      "max": 96,
+      "step": 1,
+      "scope": "device",
+      "parent": "layoutSection",
+      "description": "The taskbar window limits the usable height; this does not increase the reserved desktop area."
     },
     {
-      "id": "buttonCornerRadius", "type": "range", "label": "Button corner radius",
-      "default": 8, "min": 0, "max": 48, "step": 1, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
-    },
-    { "id": "buttonPaddingHorizontal", "type": "range", "label": "Button horizontal padding", "default": 6, "min": 0, "max": 64, "step": 1, "scope": "device" },
-    { "id": "buttonPaddingVertical", "type": "range", "label": "Button vertical padding", "default": 4, "min": 0, "max": 64, "step": 1, "scope": "device" },
-    { "id": "buttonSpacing", "type": "range", "label": "Button spacing", "default": 2, "min": 0, "max": 64, "step": 1, "scope": "device" },
-    { "id": "buttonScale", "type": "range", "label": "Button base scale", "default": 1, "min": 0.5, "max": 1.5, "step": 0.01, "scope": "device" },
-    { "id": "buttonHoverScale", "type": "range", "label": "Button hover scale", "default": 1.06, "min": 0.5, "max": 1.5, "step": 0.01, "scope": "device" },
-    { "id": "buttonPressScale", "type": "range", "label": "Button press scale", "default": 0.96, "min": 0.5, "max": 1.5, "step": 0.01, "scope": "device" },
-    { "id": "buttonHoverOpacity", "type": "range", "label": "Button hover opacity", "default": 1, "min": 0, "max": 1, "step": 0.01, "scope": "device" },
-    { "id": "buttonPressOpacity", "type": "range", "label": "Button press opacity", "default": 0.92, "min": 0, "max": 1, "step": 0.01, "scope": "device" },
-    { "id": "buttonHoverDurationMs", "type": "range", "label": "Button hover duration (ms)", "default": 180, "min": 0, "max": 2000, "step": 10, "scope": "device" },
-    { "id": "buttonPressDurationMs", "type": "range", "label": "Button press duration (ms)", "default": 90, "min": 0, "max": 2000, "step": 10, "scope": "device" },
-    {
-      "id": "buttonEasing", "type": "select", "label": "Button animation easing",
-      "default": "ease-out", "options": [
-        { "value": "linear", "label": "Linear" },
-        { "value": "ease-out", "label": "Ease out" },
-        { "value": "ease-in-out", "label": "Ease in and out" }
-      ], "scope": "device"
-    },
-    { "id": "startSection", "type": "section", "label": "Start button" },
-    {
-      "id": "startBackgroundColor", "type": "color", "label": "Start background",
-      "default": "#00000000", "alpha": true, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceOffsetX",
+      "type": "range",
+      "label": "Horizontal offset (px)",
+      "default": 0,
+      "min": -64,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "parent": "layoutSection",
+      "description": "Positive values move content right inside the native taskbar window."
     },
     {
-      "id": "startForegroundColor", "type": "color", "label": "Start foreground",
-      "default": "#FFFFFFFF", "alpha": true, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
-    },
-    { "id": "startScale", "type": "range", "label": "Start base scale", "default": 1, "min": 0.5, "max": 1.5, "step": 0.01, "scope": "device" },
-    { "id": "startHoverScale", "type": "range", "label": "Start hover scale", "default": 1.08, "min": 0.5, "max": 1.5, "step": 0.01, "scope": "device" },
-    { "id": "startAnimationDurationMs", "type": "range", "label": "Start animation duration (ms)", "default": 180, "min": 0, "max": 2000, "step": 10, "scope": "device" },
-    { "id": "traySection", "type": "section", "label": "System tray" },
-    {
-      "id": "trayBackgroundColor", "type": "color", "label": "Tray background",
-      "default": "#00000000", "alpha": true, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceOffsetY",
+      "type": "range",
+      "label": "Vertical offset (px)",
+      "default": 0,
+      "min": -32,
+      "max": 32,
+      "step": 1,
+      "scope": "device",
+      "parent": "layoutSection",
+      "description": "Positive values move content down. Keep icons and flyouts inside the Windows taskbar area."
     },
     {
-      "id": "trayForegroundColor", "type": "color", "label": "Tray foreground",
-      "default": "#FFFFFFFF", "alpha": true, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceSection",
+      "type": "section",
+      "label": "Taskbar surface",
+      "defaultCollapsed": false
     },
     {
-      "id": "trayCornerRadius", "type": "range", "label": "Tray corner radius",
-      "default": 8, "min": 0, "max": 48, "step": 1, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
-    },
-    { "id": "trayPaddingHorizontal", "type": "range", "label": "Tray horizontal padding", "default": 5, "min": 0, "max": 64, "step": 1, "scope": "device" },
-    { "id": "trayPaddingVertical", "type": "range", "label": "Tray vertical padding", "default": 3, "min": 0, "max": 64, "step": 1, "scope": "device" },
-    { "id": "traySpacing", "type": "range", "label": "Tray spacing", "default": 2, "min": 0, "max": 64, "step": 1, "scope": "device" },
-    { "id": "trayScale", "type": "range", "label": "Tray base scale", "default": 1, "min": 0.5, "max": 1.5, "step": 0.01, "scope": "device" },
-    { "id": "trayHoverScale", "type": "range", "label": "Tray hover scale", "default": 1.05, "min": 0.5, "max": 1.5, "step": 0.01, "scope": "device" },
-    { "id": "trayAnimationDurationMs", "type": "range", "label": "Tray animation duration (ms)", "default": 160, "min": 0, "max": 2000, "step": 10, "scope": "device" },
-    { "id": "indicatorSection", "type": "section", "label": "Taskbar indicators" },
-    {
-      "id": "indicatorColor", "type": "color", "label": "Indicator color",
-      "default": "#65C8FFFF", "alpha": true, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceColor",
+      "type": "color",
+      "label": "Surface color",
+      "description": "XAML color in #RRGGBBAA format.",
+      "default": "#1B2330FF",
+      "alpha": true,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "surfaceSection"
     },
     {
-      "id": "indicatorThickness", "type": "range", "label": "Indicator thickness",
-      "default": 2, "min": 0, "max": 16, "step": 1, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceOpacity",
+      "type": "range",
+      "label": "Surface opacity",
+      "default": 0.94,
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "surfaceSection"
     },
     {
-      "id": "indicatorRadius", "type": "range", "label": "Indicator corner radius",
-      "default": 2, "min": 0, "max": 16, "step": 1, "scope": "device",
-      "showIf": { "setting": "profile", "equals": "custom" }
+      "id": "surfaceRadius",
+      "type": "range",
+      "label": "Surface corner radius",
+      "default": 14,
+      "min": 0,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "surfaceSection"
     },
-    { "id": "advancedSection", "type": "section", "label": "Advanced XAML rules" },
+    {
+      "id": "surfaceInsetHorizontal",
+      "type": "range",
+      "label": "Surface horizontal inset",
+      "default": 0,
+      "min": -64,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "surfaceSection"
+    },
+    {
+      "id": "surfaceInsetVertical",
+      "type": "range",
+      "label": "Surface vertical inset",
+      "default": 0,
+      "min": -64,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "surfaceSection"
+    },
+    {
+      "id": "buttonSection",
+      "type": "section",
+      "label": "Taskbar buttons",
+      "defaultCollapsed": false
+    },
+    {
+      "id": "buttonBackgroundColor",
+      "type": "color",
+      "label": "Button background",
+      "default": "#00000000",
+      "alpha": true,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "buttonSection"
+    },
+    {
+      "id": "buttonForegroundColor",
+      "type": "color",
+      "label": "Button foreground",
+      "default": "#FFFFFFFF",
+      "alpha": true,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "buttonSection"
+    },
+    {
+      "id": "buttonCornerRadius",
+      "type": "range",
+      "label": "Button corner radius",
+      "default": 8,
+      "min": 0,
+      "max": 48,
+      "step": 1,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "buttonSection"
+    },
+    {
+      "id": "buttonPaddingHorizontal",
+      "type": "range",
+      "label": "Button horizontal padding",
+      "default": 6,
+      "min": 0,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "parent": "buttonSection"
+    },
+    {
+      "id": "buttonPaddingVertical",
+      "type": "range",
+      "label": "Button vertical padding",
+      "default": 4,
+      "min": 0,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "parent": "buttonSection"
+    },
+    {
+      "id": "buttonSpacing",
+      "type": "range",
+      "label": "Button spacing",
+      "default": 2,
+      "min": 0,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "parent": "buttonSection"
+    },
+    {
+      "id": "buttonScale",
+      "type": "range",
+      "label": "Button base scale",
+      "default": 1,
+      "min": 0.5,
+      "max": 1.5,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "buttonMotionSection"
+    },
+    {
+      "id": "buttonHoverScale",
+      "type": "range",
+      "label": "Button hover scale",
+      "default": 1.06,
+      "min": 0.5,
+      "max": 1.5,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "buttonMotionSection"
+    },
+    {
+      "id": "buttonPressScale",
+      "type": "range",
+      "label": "Button press scale",
+      "default": 0.96,
+      "min": 0.5,
+      "max": 1.5,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "buttonMotionSection"
+    },
+    {
+      "id": "buttonHoverOpacity",
+      "type": "range",
+      "label": "Button hover opacity",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "buttonMotionSection"
+    },
+    {
+      "id": "buttonPressOpacity",
+      "type": "range",
+      "label": "Button press opacity",
+      "default": 0.92,
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "buttonMotionSection"
+    },
+    {
+      "id": "buttonHoverDurationMs",
+      "type": "range",
+      "label": "Button hover duration (ms)",
+      "default": 180,
+      "min": 0,
+      "max": 2000,
+      "step": 10,
+      "scope": "device",
+      "parent": "buttonMotionSection"
+    },
+    {
+      "id": "buttonPressDurationMs",
+      "type": "range",
+      "label": "Button press duration (ms)",
+      "default": 90,
+      "min": 0,
+      "max": 2000,
+      "step": 10,
+      "scope": "device",
+      "parent": "buttonMotionSection"
+    },
+    {
+      "id": "buttonEasing",
+      "type": "select",
+      "label": "Button animation easing",
+      "default": "ease-out",
+      "options": [
+        {
+          "value": "linear",
+          "label": "Linear"
+        },
+        {
+          "value": "ease-out",
+          "label": "Ease out"
+        },
+        {
+          "value": "ease-in-out",
+          "label": "Ease in and out"
+        }
+      ],
+      "scope": "device",
+      "parent": "buttonMotionSection"
+    },
+    {
+      "id": "buttonWidth",
+      "type": "range",
+      "label": "App button width (px · 0 = Windows)",
+      "default": 0,
+      "min": 0,
+      "max": 160,
+      "step": 1,
+      "scope": "device",
+      "parent": "buttonSection"
+    },
+    {
+      "id": "buttonHeight",
+      "type": "range",
+      "label": "App button height (px · 0 = Windows)",
+      "default": 0,
+      "min": 0,
+      "max": 96,
+      "step": 1,
+      "scope": "device",
+      "parent": "buttonSection",
+      "description": "Large values may be clipped by Windows; increase hover scale gradually."
+    },
+    {
+      "id": "buttonRotationDegrees",
+      "type": "range",
+      "label": "App button rotation (°)",
+      "default": 0,
+      "min": -180,
+      "max": 180,
+      "step": 1,
+      "scope": "device",
+      "parent": "buttonSection",
+      "description": "Composition rotation in degrees; the original angle is restored when disabled."
+    },
+    {
+      "id": "buttonMotionSection",
+      "type": "section",
+      "label": "Hover and press animations",
+      "parent": "buttonSection",
+      "defaultCollapsed": true,
+      "description": "Animations run in Windows Composition when the pointer enters or presses a button; no polling loop."
+    },
+    {
+      "id": "startSection",
+      "type": "section",
+      "label": "Start button",
+      "defaultCollapsed": true
+    },
+    {
+      "id": "startBackgroundColor",
+      "type": "color",
+      "label": "Start background",
+      "default": "#00000000",
+      "alpha": true,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "startSection"
+    },
+    {
+      "id": "startForegroundColor",
+      "type": "color",
+      "label": "Start foreground",
+      "default": "#FFFFFFFF",
+      "alpha": true,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "startSection"
+    },
+    {
+      "id": "startScale",
+      "type": "range",
+      "label": "Start base scale",
+      "default": 1,
+      "min": 0.5,
+      "max": 1.5,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "startSection"
+    },
+    {
+      "id": "startHoverScale",
+      "type": "range",
+      "label": "Start hover scale",
+      "default": 1.08,
+      "min": 0.5,
+      "max": 1.5,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "startSection"
+    },
+    {
+      "id": "startAnimationDurationMs",
+      "type": "range",
+      "label": "Start animation duration (ms)",
+      "default": 180,
+      "min": 0,
+      "max": 2000,
+      "step": 10,
+      "scope": "device",
+      "parent": "startSection"
+    },
+    {
+      "id": "traySection",
+      "type": "section",
+      "label": "System tray",
+      "defaultCollapsed": true
+    },
+    {
+      "id": "trayBackgroundColor",
+      "type": "color",
+      "label": "Tray background",
+      "default": "#00000000",
+      "alpha": true,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "traySection"
+    },
+    {
+      "id": "trayForegroundColor",
+      "type": "color",
+      "label": "Tray foreground",
+      "default": "#FFFFFFFF",
+      "alpha": true,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "traySection"
+    },
+    {
+      "id": "trayCornerRadius",
+      "type": "range",
+      "label": "Tray corner radius",
+      "default": 8,
+      "min": 0,
+      "max": 48,
+      "step": 1,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "traySection"
+    },
+    {
+      "id": "trayPaddingHorizontal",
+      "type": "range",
+      "label": "Tray horizontal padding",
+      "default": 5,
+      "min": 0,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "parent": "traySection"
+    },
+    {
+      "id": "trayPaddingVertical",
+      "type": "range",
+      "label": "Tray vertical padding",
+      "default": 3,
+      "min": 0,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "parent": "traySection"
+    },
+    {
+      "id": "traySpacing",
+      "type": "range",
+      "label": "Tray spacing",
+      "default": 2,
+      "min": 0,
+      "max": 64,
+      "step": 1,
+      "scope": "device",
+      "parent": "traySection"
+    },
+    {
+      "id": "trayScale",
+      "type": "range",
+      "label": "Tray base scale",
+      "default": 1,
+      "min": 0.5,
+      "max": 1.5,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "traySection"
+    },
+    {
+      "id": "trayHoverScale",
+      "type": "range",
+      "label": "Tray hover scale",
+      "default": 1.05,
+      "min": 0.5,
+      "max": 1.5,
+      "step": 0.01,
+      "scope": "device",
+      "parent": "traySection"
+    },
+    {
+      "id": "trayAnimationDurationMs",
+      "type": "range",
+      "label": "Tray animation duration (ms)",
+      "default": 160,
+      "min": 0,
+      "max": 2000,
+      "step": 10,
+      "scope": "device",
+      "parent": "traySection"
+    },
+    {
+      "id": "indicatorSection",
+      "type": "section",
+      "label": "Taskbar indicators",
+      "defaultCollapsed": true
+    },
+    {
+      "id": "indicatorColor",
+      "type": "color",
+      "label": "Indicator color",
+      "default": "#65C8FFFF",
+      "alpha": true,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "indicatorSection"
+    },
+    {
+      "id": "indicatorThickness",
+      "type": "range",
+      "label": "Indicator thickness",
+      "default": 2,
+      "min": 0,
+      "max": 16,
+      "step": 1,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "indicatorSection"
+    },
+    {
+      "id": "indicatorRadius",
+      "type": "range",
+      "label": "Indicator corner radius",
+      "default": 2,
+      "min": 0,
+      "max": 16,
+      "step": 1,
+      "scope": "device",
+      "showIf": {
+        "setting": "profile",
+        "equals": "custom"
+      },
+      "parent": "indicatorSection"
+    },
+    {
+      "id": "indicatorVisible",
+      "type": "boolean",
+      "label": "Show running indicators",
+      "default": true,
+      "scope": "device",
+      "parent": "indicatorSection"
+    },
+    {
+      "id": "advancedSection",
+      "type": "section",
+      "label": "Advanced XAML rules",
+      "defaultCollapsed": true,
+      "description": "Optional legacy palette and precise XAML selectors. Apply the text after editing; unsupported values are rejected."
+    },
     {
       "id": "advancedProfileJson",
       "type": "textarea",
@@ -149,7 +706,8 @@
       "description": "Optional schemaVersion 1 JSON with rules and animations. Selectors support semantic, exact name, type substring, and exact ancestorName. Supported properties depend on each XAML element; see README for the list.",
       "default": "",
       "placeholder": "{\"schemaVersion\":1,\"rules\":[{\"selector\":{\"name\":\"TaskbarFrame\"},\"properties\":{\"opacity\":0.9}}]}",
-      "scope": "device"
+      "scope": "device",
+      "parent": "advancedSection"
     }
   ],
   "native": {
@@ -159,5 +717,282 @@
         "windows-x86_64": "native/out/windows-x86_64/companion.exe"
       }
     }
-  }
+  },
+  "presets": [
+    {
+      "id": "dock",
+      "name": "Dock inspired by macOS",
+      "settings": {
+        "enabled": true,
+        "profile": "custom",
+        "surfaceWidthMode": "content",
+        "surfaceWidth": 960,
+        "surfaceAlignment": "center",
+        "surfaceHeight": 0,
+        "surfaceOffsetX": 0,
+        "surfaceOffsetY": 0,
+        "surfaceColor": "#EEF1F5CC",
+        "surfaceOpacity": 1,
+        "surfaceRadius": 20,
+        "surfaceInsetHorizontal": 8,
+        "surfaceInsetVertical": 4,
+        "buttonBackgroundColor": "#00000000",
+        "buttonForegroundColor": "#17202AFF",
+        "buttonCornerRadius": 8,
+        "buttonPaddingHorizontal": 8,
+        "buttonPaddingVertical": 4,
+        "buttonSpacing": 6,
+        "buttonScale": 1,
+        "buttonHoverScale": 1.18,
+        "buttonPressScale": 0.92,
+        "buttonHoverOpacity": 1,
+        "buttonPressOpacity": 0.92,
+        "buttonHoverDurationMs": 200,
+        "buttonPressDurationMs": 110,
+        "buttonEasing": "ease-out",
+        "buttonWidth": 0,
+        "buttonHeight": 0,
+        "buttonRotationDegrees": 0,
+        "startBackgroundColor": "#00000000",
+        "startForegroundColor": "#17202AFF",
+        "startScale": 1,
+        "startHoverScale": 1.08,
+        "startAnimationDurationMs": 180,
+        "trayBackgroundColor": "#00000000",
+        "trayForegroundColor": "#17202AFF",
+        "trayCornerRadius": 8,
+        "trayPaddingHorizontal": 5,
+        "trayPaddingVertical": 3,
+        "traySpacing": 2,
+        "trayScale": 1,
+        "trayHoverScale": 1.05,
+        "trayAnimationDurationMs": 160,
+        "indicatorColor": "#3F526CFF",
+        "indicatorThickness": 2,
+        "indicatorRadius": 2,
+        "indicatorVisible": true,
+        "advancedProfileJson": ""
+      }
+    },
+    {
+      "id": "compact",
+      "name": "Compact dark",
+      "settings": {
+        "enabled": true,
+        "profile": "custom",
+        "surfaceWidthMode": "native",
+        "surfaceWidth": 960,
+        "surfaceAlignment": "native",
+        "surfaceHeight": 0,
+        "surfaceOffsetX": 0,
+        "surfaceOffsetY": 0,
+        "surfaceColor": "#141820FF",
+        "surfaceOpacity": 0.98,
+        "surfaceRadius": 8,
+        "surfaceInsetHorizontal": 0,
+        "surfaceInsetVertical": 0,
+        "buttonBackgroundColor": "#00000000",
+        "buttonForegroundColor": "#FFFFFFFF",
+        "buttonCornerRadius": 8,
+        "buttonPaddingHorizontal": 3,
+        "buttonPaddingVertical": 2,
+        "buttonSpacing": 0,
+        "buttonScale": 1,
+        "buttonHoverScale": 1.04,
+        "buttonPressScale": 0.96,
+        "buttonHoverOpacity": 1,
+        "buttonPressOpacity": 0.92,
+        "buttonHoverDurationMs": 180,
+        "buttonPressDurationMs": 90,
+        "buttonEasing": "ease-out",
+        "buttonWidth": 0,
+        "buttonHeight": 0,
+        "buttonRotationDegrees": 0,
+        "startBackgroundColor": "#00000000",
+        "startForegroundColor": "#FFFFFFFF",
+        "startScale": 1,
+        "startHoverScale": 1.08,
+        "startAnimationDurationMs": 180,
+        "trayBackgroundColor": "#00000000",
+        "trayForegroundColor": "#FFFFFFFF",
+        "trayCornerRadius": 8,
+        "trayPaddingHorizontal": 3,
+        "trayPaddingVertical": 2,
+        "traySpacing": 2,
+        "trayScale": 1,
+        "trayHoverScale": 1.05,
+        "trayAnimationDurationMs": 160,
+        "indicatorColor": "#65C8FFFF",
+        "indicatorThickness": 2,
+        "indicatorRadius": 2,
+        "indicatorVisible": true,
+        "advancedProfileJson": ""
+      }
+    },
+    {
+      "id": "glass",
+      "name": "Glass",
+      "settings": {
+        "enabled": true,
+        "profile": "custom",
+        "surfaceWidthMode": "native",
+        "surfaceWidth": 960,
+        "surfaceAlignment": "native",
+        "surfaceHeight": 0,
+        "surfaceOffsetX": 0,
+        "surfaceOffsetY": 0,
+        "surfaceColor": "#1B2330D9",
+        "surfaceOpacity": 0.94,
+        "surfaceRadius": 14,
+        "surfaceInsetHorizontal": 0,
+        "surfaceInsetVertical": 0,
+        "buttonBackgroundColor": "#00000000",
+        "buttonForegroundColor": "#FFFFFFFF",
+        "buttonCornerRadius": 8,
+        "buttonPaddingHorizontal": 6,
+        "buttonPaddingVertical": 4,
+        "buttonSpacing": 2,
+        "buttonScale": 1,
+        "buttonHoverScale": 1.06,
+        "buttonPressScale": 0.96,
+        "buttonHoverOpacity": 1,
+        "buttonPressOpacity": 0.92,
+        "buttonHoverDurationMs": 180,
+        "buttonPressDurationMs": 90,
+        "buttonEasing": "ease-out",
+        "buttonWidth": 0,
+        "buttonHeight": 0,
+        "buttonRotationDegrees": 0,
+        "startBackgroundColor": "#00000000",
+        "startForegroundColor": "#FFFFFFFF",
+        "startScale": 1,
+        "startHoverScale": 1.08,
+        "startAnimationDurationMs": 180,
+        "trayBackgroundColor": "#00000000",
+        "trayForegroundColor": "#FFFFFFFF",
+        "trayCornerRadius": 8,
+        "trayPaddingHorizontal": 5,
+        "trayPaddingVertical": 3,
+        "traySpacing": 2,
+        "trayScale": 1,
+        "trayHoverScale": 1.05,
+        "trayAnimationDurationMs": 160,
+        "indicatorColor": "#65C8FFFF",
+        "indicatorThickness": 2,
+        "indicatorRadius": 2,
+        "indicatorVisible": true,
+        "advancedProfileJson": ""
+      }
+    },
+    {
+      "id": "rose",
+      "name": "Rose",
+      "settings": {
+        "enabled": true,
+        "profile": "custom",
+        "surfaceWidthMode": "native",
+        "surfaceWidth": 960,
+        "surfaceAlignment": "native",
+        "surfaceHeight": 0,
+        "surfaceOffsetX": 0,
+        "surfaceOffsetY": 0,
+        "surfaceColor": "#FF1493FF",
+        "surfaceOpacity": 1,
+        "surfaceRadius": 18,
+        "surfaceInsetHorizontal": 0,
+        "surfaceInsetVertical": 0,
+        "buttonBackgroundColor": "#A52D68FF",
+        "buttonForegroundColor": "#FFFFFFFF",
+        "buttonCornerRadius": 8,
+        "buttonPaddingHorizontal": 6,
+        "buttonPaddingVertical": 4,
+        "buttonSpacing": 2,
+        "buttonScale": 1,
+        "buttonHoverScale": 1.06,
+        "buttonPressScale": 0.96,
+        "buttonHoverOpacity": 1,
+        "buttonPressOpacity": 0.92,
+        "buttonHoverDurationMs": 180,
+        "buttonPressDurationMs": 90,
+        "buttonEasing": "ease-out",
+        "buttonWidth": 0,
+        "buttonHeight": 0,
+        "buttonRotationDegrees": 0,
+        "startBackgroundColor": "#C74382FF",
+        "startForegroundColor": "#FFFFFFFF",
+        "startScale": 1,
+        "startHoverScale": 1.08,
+        "startAnimationDurationMs": 180,
+        "trayBackgroundColor": "#A52D68FF",
+        "trayForegroundColor": "#FFFFFFFF",
+        "trayCornerRadius": 8,
+        "trayPaddingHorizontal": 5,
+        "trayPaddingVertical": 3,
+        "traySpacing": 2,
+        "trayScale": 1,
+        "trayHoverScale": 1.05,
+        "trayAnimationDurationMs": 160,
+        "indicatorColor": "#FFD1E6FF",
+        "indicatorThickness": 2,
+        "indicatorRadius": 2,
+        "indicatorVisible": true,
+        "advancedProfileJson": ""
+      }
+    },
+    {
+      "id": "mint",
+      "name": "Mint",
+      "settings": {
+        "enabled": true,
+        "profile": "custom",
+        "surfaceWidthMode": "native",
+        "surfaceWidth": 960,
+        "surfaceAlignment": "native",
+        "surfaceHeight": 0,
+        "surfaceOffsetX": 0,
+        "surfaceOffsetY": 0,
+        "surfaceColor": "#163C37F5",
+        "surfaceOpacity": 0.94,
+        "surfaceRadius": 16,
+        "surfaceInsetHorizontal": 0,
+        "surfaceInsetVertical": 0,
+        "buttonBackgroundColor": "#225E55FF",
+        "buttonForegroundColor": "#FFFFFFFF",
+        "buttonCornerRadius": 8,
+        "buttonPaddingHorizontal": 6,
+        "buttonPaddingVertical": 4,
+        "buttonSpacing": 2,
+        "buttonScale": 1,
+        "buttonHoverScale": 1.06,
+        "buttonPressScale": 0.96,
+        "buttonHoverOpacity": 1,
+        "buttonPressOpacity": 0.92,
+        "buttonHoverDurationMs": 180,
+        "buttonPressDurationMs": 90,
+        "buttonEasing": "ease-out",
+        "buttonWidth": 0,
+        "buttonHeight": 0,
+        "buttonRotationDegrees": 0,
+        "startBackgroundColor": "#328B79FF",
+        "startForegroundColor": "#FFFFFFFF",
+        "startScale": 1,
+        "startHoverScale": 1.08,
+        "startAnimationDurationMs": 180,
+        "trayBackgroundColor": "#225E55FF",
+        "trayForegroundColor": "#FFFFFFFF",
+        "trayCornerRadius": 8,
+        "trayPaddingHorizontal": 5,
+        "trayPaddingVertical": 3,
+        "traySpacing": 2,
+        "trayScale": 1,
+        "trayHoverScale": 1.05,
+        "trayAnimationDurationMs": 160,
+        "indicatorColor": "#95F2D7FF",
+        "indicatorThickness": 2,
+        "indicatorRadius": 2,
+        "indicatorVisible": true,
+        "advancedProfileJson": ""
+      }
+    }
+  ]
 }
