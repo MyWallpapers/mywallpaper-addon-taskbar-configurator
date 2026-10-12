@@ -96,15 +96,11 @@ HWND g_taskbar_window = nullptr;
 DWORD g_taskbar_thread = 0;
 HANDLE g_start_operation = nullptr;
 std::atomic<HRESULT> g_start_operation_result{E_PENDING};
-
-struct UnadviseOperation {
-    IVisualTreeService* visual_tree = nullptr;
-    IVisualTreeServiceCallback2* observer = nullptr;
-    HRESULT result = E_PENDING;
-};
-
-HANDLE g_unadvise_operation = nullptr;
-UnadviseOperation* g_unadvise_context = nullptr;
+// One process-lifetime observer per resident add-on image; styling and all
+// behavior subscriptions still stop. Fields: version, observers, initial
+// enumerations, UI snapshots and inactive notifications.
+extern "C" __declspec(dllexport) uint64_t MwTaskbarConfiguratorLifecycleDiagnosticsBlock[5] = {
+    1, 0, 0, 0, 0};
 
 struct UiCompletion {
     UiCompletion() noexcept : event(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {}
@@ -191,7 +187,7 @@ private:
     std::shared_ptr<UiCompletion> pending_;
 };
 
-UiCompletionSlot g_cleanup_restore_operation;
+UiCompletionSlot g_ui_lifecycle_operation;
 
 struct MotionSettings {
     double hover_scale = 1.0;
@@ -723,7 +719,7 @@ void AddDesiredProperty(ElementEntry &entry, std::vector<PropertyState> *desired
             }
         }
         if (!property || !inspectable) {
-            const auto resolved = taskbar_xaml::Resolve(entry.element, property_name, expanded);
+            const auto resolved = taskbar_xaml::Resolve(entry.element, property_name, expanded, property);
             property = resolved.property;
             inspectable = resolved.value;
         }
@@ -1724,6 +1720,108 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
     explicit VisualTreeWatcher(winrt::com_ptr<IXamlDiagnostics> diagnostics)
         : diagnostics_(std::move(diagnostics)) {}
 
+    void RememberRoot(const xaml::UIElement &root) {
+        if (!root)
+            return;
+        for (auto it = roots_.begin(); it != roots_.end();) {
+            const auto existing = it->get();
+            if (!existing)
+                it = roots_.erase(it);
+            else {
+                if (existing == root)
+                    return;
+                ++it;
+            }
+        }
+        if (roots_.size() >= 8)
+            winrt::throw_hresult(E_BOUNDS);
+        roots_.push_back(winrt::make_weak(root));
+    }
+
+    HRESULT SnapshotOnUi() noexcept {
+        try {
+            size_t visited = 0;
+            bool live_root = false;
+            // Copy weak roots: observing descendants may discover another root.
+            const auto roots = roots_;
+            for (const auto &weak : roots)
+                if (const auto root = weak.get()) {
+                    live_root = true;
+                    SnapshotElement(root, 0, visited, {});
+                }
+            if (!live_root)
+                return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+            IncrementDiagnostic(&MwTaskbarConfiguratorLifecycleDiagnosticsBlock[3]);
+            return S_OK;
+        } catch (...) {
+            return winrt::to_hresult();
+        }
+    }
+
+    void ObserveElement(uint64_t handle, const xaml::FrameworkElement &framework,
+                        std::wstring_view own_name, std::wstring_view own_type,
+                        const std::vector<std::string> *snapshot_ancestors = nullptr) {
+        if (g_entries.contains(handle))
+            return;
+        const auto ui = framework.try_as<xaml::UIElement>();
+        if (!ui)
+            return;
+        bool belongs_to_taskbar = false;
+        std::vector<std::string> ancestor_names;
+        if (snapshot_ancestors)
+            ancestor_names = *snapshot_ancestors;
+        else {
+            xaml::DependencyObject parent = media::VisualTreeHelper::GetParent(framework);
+            for (int depth = 0; parent && depth < 64; ++depth) {
+                if (auto parent_element = parent.try_as<xaml::FrameworkElement>()) {
+                    const auto name = parent_element.Name();
+                    if (!name.empty())
+                        ancestor_names.push_back(ToUtf8(name));
+                }
+                parent = media::VisualTreeHelper::GetParent(parent);
+            }
+        }
+        for (const auto &name : ancestor_names)
+            if (name == "TaskbarFrame" || name == "SystemTrayFrame" ||
+                name == "SystemTrayFrameGrid")
+                belongs_to_taskbar = true;
+        if (!belongs_to_taskbar && own_name != L"TaskbarFrame" && own_name != L"SystemTrayFrame" &&
+            own_name != L"SystemTrayFrameGrid" &&
+            own_type.find(L"Taskbar.") == std::wstring_view::npos &&
+            own_type.find(L"SystemTray.") == std::wstring_view::npos)
+            return;
+        if (const auto root = framework.XamlRoot())
+            RememberRoot(root.Content());
+        else if (own_name == L"TaskbarFrame" || own_name == L"SystemTrayFrame" ||
+                 own_type == L"Taskbar.TaskbarFrame" || own_type == L"SystemTray.SystemTrayFrame")
+            // An island may be reported before XamlRoot is attached. Its weak
+            // frame still lets the UI queue read the finished tree afterwards.
+            RememberRoot(ui);
+        ElementEntry entry;
+        entry.handle = handle;
+        entry.element = framework;
+        entry.ui_element = ui;
+        entry.name = ToUtf8(own_name);
+        entry.type = ToUtf8(own_type);
+        entry.ancestor_names = std::move(ancestor_names);
+        Classify(entry);
+        {
+            std::lock_guard lock(g_dispatcher_mutex);
+            if (!g_dispatcher) {
+                const auto dispatcher = framework.Dispatcher();
+                if (dispatcher)
+                    g_dispatcher = winrt::agile_ref(dispatcher);
+            }
+        }
+        auto [it, inserted] = g_entries.emplace(handle, std::move(entry));
+        if (inserted) {
+            ApplyEntry(it->second);
+            if (!g_ui_config.captures.empty())
+                QueueDynamicApply();
+            UpdateDiagnostics();
+        }
+    }
+
     foundation::IInspectable ResolveElement(InstanceHandle handle) const {
         foundation::IInspectable inspectable{nullptr};
         // Handles belong to the cache that produced this observer's callbacks.
@@ -1741,7 +1839,10 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(ParentChildRelation,
         VisualElement value, VisualMutationType mutation) noexcept override {
         auto guard = g_call_gate.Enter();
-        if (!guard || !g_active.load(std::memory_order_acquire)) return S_OK;
+        if (!guard || !g_active.load(std::memory_order_acquire)) {
+            IncrementDiagnostic(&MwTaskbarConfiguratorLifecycleDiagnosticsBlock[4]);
+            return S_OK;
+        }
         if (GetCurrentThreadId() != g_taskbar_thread) return S_OK;
         const uint64_t handle = static_cast<uint64_t>(value.Handle);
         if (mutation != Add) {
@@ -1757,45 +1858,8 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
             const auto inspectable = ResolveElement(value.Handle);
             if (!inspectable) return S_OK;
             auto framework = inspectable.try_as<xaml::FrameworkElement>();
-            auto ui = inspectable.try_as<xaml::UIElement>();
-            if (!framework || !ui) return S_OK;
-
-            bool belongs_to_taskbar = false;
-            std::vector<std::string> ancestor_names;
-            xaml::DependencyObject parent = media::VisualTreeHelper::GetParent(framework);
-            for (int depth = 0; parent && depth < 64; ++depth) {
-                if (auto parent_element = parent.try_as<xaml::FrameworkElement>()) {
-                    const auto name = parent_element.Name();
-                    if (!name.empty()) {
-                        const auto utf8_name = ToUtf8(name);
-                        if (name == L"TaskbarFrame" || name == L"SystemTrayFrame" || name == L"SystemTrayFrameGrid") belongs_to_taskbar = true;
-                        ancestor_names.push_back(utf8_name);
-                    }
-                }
-                parent = media::VisualTreeHelper::GetParent(parent);
-            }
-            const std::wstring own_name = BstrText(value.Name);
-            const std::wstring own_type = BstrText(value.Type);
-            if (!belongs_to_taskbar && own_name != L"TaskbarFrame" && own_name != L"SystemTrayFrame" && own_name != L"SystemTrayFrameGrid" && own_type.find(L"Taskbar.") == std::wstring::npos && own_type.find(L"SystemTray.") == std::wstring::npos) return S_OK;
-
-            ElementEntry entry;
-            entry.handle = handle;
-            entry.element = framework;
-            entry.ui_element = ui;
-            entry.name = ToUtf8(own_name);
-            entry.type = ToUtf8(own_type);
-            entry.ancestor_names = std::move(ancestor_names);
-            Classify(entry);
-            {
-                std::lock_guard lock(g_dispatcher_mutex);
-                if (!g_dispatcher) g_dispatcher = winrt::agile_ref(framework.Dispatcher());
-            }
-            auto [it, inserted] = g_entries.emplace(handle, std::move(entry));
-            if (inserted) {
-                ApplyEntry(it->second);
-                if (!g_ui_config.captures.empty()) QueueDynamicApply();
-                UpdateDiagnostics();
-            }
+            if (framework)
+                ObserveElement(handle, framework, BstrText(value.Name), BstrText(value.Type));
             return S_OK;
         } catch (...) {
             SetLastError(winrt::to_hresult());
@@ -1809,8 +1873,31 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
     }
 
 private:
+  void SnapshotElement(const xaml::DependencyObject &object, unsigned depth, size_t &visited,
+                       const std::vector<std::string> &ancestors) {
+      if (depth > 64 || ++visited > 32768)
+          winrt::throw_hresult(E_BOUNDS);
+      auto child_ancestors = ancestors;
+      if (const auto framework = object.try_as<xaml::FrameworkElement>()) {
+          InstanceHandle handle = 0;
+          winrt::check_hresult(diagnostics_->GetHandleFromIInspectable(
+              reinterpret_cast<::IInspectable *>(winrt::get_abi(framework)), &handle));
+          const auto type = winrt::get_class_name(framework);
+          const auto name = framework.Name();
+          ObserveElement(handle, framework, name, type, &ancestors);
+          if (!name.empty())
+              child_ancestors.insert(child_ancestors.begin(), ToUtf8(name));
+      }
+      const int count = media::VisualTreeHelper::GetChildrenCount(object);
+      for (int child = 0; child < count; ++child)
+          SnapshotElement(media::VisualTreeHelper::GetChild(object, child), depth + 1, visited,
+                          child_ancestors);
+  }
     const winrt::com_ptr<IXamlDiagnostics> diagnostics_;
+    std::vector<winrt::weak_ref<xaml::UIElement>> roots_;
 };
+
+winrt::com_ptr<VisualTreeWatcher> g_diagnostics_watcher;
 
 struct DiagnosticsSite : winrt::implements<DiagnosticsSite, IObjectWithSite> {
     winrt::com_ptr<IUnknown> site;
@@ -1821,8 +1908,8 @@ struct DiagnosticsSite : winrt::implements<DiagnosticsSite, IObjectWithSite> {
             if (!site) return S_OK;
             auto diagnostics = site.as<IXamlDiagnostics>();
             g_visual_tree = site.as<IVisualTreeService>();
-            g_observer = winrt::make_self<VisualTreeWatcher>(std::move(diagnostics))
-                .as<IVisualTreeServiceCallback2>();
+            g_diagnostics_watcher = winrt::make_self<VisualTreeWatcher>(std::move(diagnostics));
+            g_observer = g_diagnostics_watcher.as<IVisualTreeServiceCallback2>();
             g_site_object = site;
             return S_OK;
         } catch (...) { return winrt::to_hresult(); }
@@ -1855,54 +1942,12 @@ HRESULT AdviseTree() noexcept {
         std::thread worker([&] { result = g_visual_tree->AdviseVisualTreeChange(g_observer.get()); });
         worker.join();
         g_tree_advised = SUCCEEDED(result);
+        if (g_tree_advised) {
+            SetDiagnostic(&MwTaskbarConfiguratorLifecycleDiagnosticsBlock[1], 1);
+            IncrementDiagnostic(&MwTaskbarConfiguratorLifecycleDiagnosticsBlock[2]);
+        }
         return result;
     } catch (...) { return winrt::to_hresult(); }
-}
-
-unsigned __stdcall UnadviseTreeWorker(void* raw) noexcept {
-    WorkerCounter worker_counter;
-    auto* operation = static_cast<UnadviseOperation*>(raw);
-    operation->result = operation->visual_tree->UnadviseVisualTreeChange(
-        operation->observer);
-    return 0;
-}
-
-HRESULT UnadviseTree() noexcept {
-    if (!g_tree_advised) return S_OK;
-    if (!g_visual_tree || !g_observer) return E_NOINTERFACE;
-
-    if (!g_unadvise_operation) {
-        auto context = std::unique_ptr<UnadviseOperation>(new (std::nothrow) UnadviseOperation{});
-        if (!context) return E_OUTOFMEMORY;
-        context->visual_tree = g_visual_tree.get();
-        context->observer = g_observer.get();
-        context->visual_tree->AddRef();
-        context->observer->AddRef();
-        unsigned thread_id = 0;
-        const uintptr_t thread = _beginthreadex(nullptr, 0,
-            &UnadviseTreeWorker, context.get(), 0, &thread_id);
-        if (!thread) {
-            context->visual_tree->Release();
-            context->observer->Release();
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-        g_unadvise_context = context.release();
-        g_unadvise_operation = reinterpret_cast<HANDLE>(thread);
-    }
-
-    const DWORD wait = WaitForSingleObject(g_unadvise_operation, kDrainTimeoutMs);
-    if (wait == WAIT_TIMEOUT) return E_PENDING;
-    if (wait != WAIT_OBJECT_0) return HRESULT_FROM_WIN32(GetLastError());
-
-    const HRESULT result = g_unadvise_context->result;
-    CloseHandle(g_unadvise_operation);
-    g_unadvise_operation = nullptr;
-    g_unadvise_context->visual_tree->Release();
-    g_unadvise_context->observer->Release();
-    delete g_unadvise_context;
-    g_unadvise_context = nullptr;
-    if (SUCCEEDED(result)) g_tree_advised = false;
-    return result;
 }
 
 HRESULT ConnectDiagnostics() noexcept {
@@ -1941,12 +1986,63 @@ HRESULT ConnectDiagnostics() noexcept {
     return E_FAIL;
 }
 
+HRESULT ScheduleResumeTreeOnUi(const std::shared_ptr<UiCompletion> &completion) noexcept {
+    try {
+        winrt::Windows::UI::Core::CoreDispatcher dispatcher{nullptr};
+        {
+            std::lock_guard lock(g_dispatcher_mutex);
+            if (g_dispatcher)
+                dispatcher = g_dispatcher.get();
+        }
+        if (!dispatcher || !g_diagnostics_watcher)
+            return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        const uint64_t generation = g_lifecycle_generation.load(std::memory_order_acquire);
+        dispatcher.RunAsync(
+            winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [completion, generation] {
+                auto guard = g_call_gate.Enter();
+                if (!guard || !g_active.load(std::memory_order_acquire) ||
+                    generation != g_lifecycle_generation.load(std::memory_order_acquire)) {
+                    completion->Complete(HRESULT_FROM_WIN32(ERROR_CANCELLED));
+                    return;
+                }
+                HRESULT result = g_diagnostics_watcher->SnapshotOnUi();
+                if (SUCCEEDED(result)) {
+                    try {
+                        ReadCaptures();
+                        for (auto &[handle, entry] : g_entries) {
+                            (void)handle;
+                            ApplyEntry(entry);
+                        }
+                    } catch (...) {
+                        result = winrt::to_hresult();
+                    }
+                }
+                completion->Complete(result);
+            });
+        return S_OK;
+    } catch (...) {
+        return winrt::to_hresult();
+    }
+}
+
 unsigned __stdcall StartDiagnosticsOperation(void*) noexcept {
     WorkerCounter worker_counter;
     HRESULT result = ConnectDiagnostics();
     if (SUCCEEDED(result)) {
-        result = g_active.load(std::memory_order_acquire)
-            ? AdviseTree() : HRESULT_FROM_WIN32(ERROR_CANCELLED);
+        if (!g_active.load(std::memory_order_acquire))
+            result = HRESULT_FROM_WIN32(ERROR_CANCELLED);
+        else {
+            if (!g_tree_advised)
+                result = AdviseTree();
+            if (SUCCEEDED(result)) {
+                // Initial diagnostics notifications can arrive before XAML has
+                // attached descendants to their parents. Read the complete live
+                // tree after enumeration, just as on later Start calls.
+                result = g_ui_lifecycle_operation
+                             .RunOrJoin(&ScheduleResumeTreeOnUi, kUiDispatchTimeoutMs)
+                             .result;
+            }
+        }
     }
     g_start_operation_result.store(result, std::memory_order_release);
     return 0;
@@ -2013,7 +2109,7 @@ MwStatus FinishCleanup() noexcept {
     // A timed-out UI callback can still be traversing g_entries after its last
     // erase. Reap the exact operation before reading the map or allowing Start.
     const UiCompletionResult previous_restore =
-        g_cleanup_restore_operation.WaitForExisting(kUiDispatchTimeoutMs);
+        g_ui_lifecycle_operation.WaitForExisting(kUiDispatchTimeoutMs);
     if (previous_restore.had_operation &&
         (!previous_restore.completed || FAILED(previous_restore.result))) {
         SetLastError(previous_restore.result);
@@ -2025,8 +2121,8 @@ MwStatus FinishCleanup() noexcept {
         // UI callbacks from touching g_entries. Restore any styles already
         // applied, but leave COM state alone until the startup worker exits.
         if (!g_entries.empty()) {
-            const UiCompletionResult restored = g_cleanup_restore_operation.RunOrJoin(
-                &ScheduleRestoreAllOnUi, kUiDispatchTimeoutMs);
+            const UiCompletionResult restored =
+                g_ui_lifecycle_operation.RunOrJoin(&ScheduleRestoreAllOnUi, kUiDispatchTimeoutMs);
             if (!restored.completed || FAILED(restored.result)) {
                 SetLastError(restored.result);
                 return MW_ERROR_DRAIN_PENDING;
@@ -2035,22 +2131,21 @@ MwStatus FinishCleanup() noexcept {
         return MW_ERROR_DRAIN_PENDING;
     }
 
-    const HRESULT unadvise = UnadviseTree();
-    if (FAILED(unadvise)) SetLastError(unadvise);
-
     if (!g_entries.empty()) {
-        const UiCompletionResult result = g_cleanup_restore_operation.RunOrJoin(
-            &ScheduleRestoreAllOnUi, kUiDispatchTimeoutMs);
+        const UiCompletionResult result =
+            g_ui_lifecycle_operation.RunOrJoin(&ScheduleRestoreAllOnUi, kUiDispatchTimeoutMs);
         if (!result.completed || FAILED(result.result)) {
             SetLastError(result.result);
             return MW_ERROR_DRAIN_PENDING;
         }
     }
-    if (FAILED(unadvise)) return MW_ERROR_DRAIN_PENDING;
-
     {
         std::lock_guard lock(g_dispatcher_mutex);
-        g_dispatcher = {};
+        // Keep only the dispatcher for the one resident diagnostics observer.
+        // Inactive callbacks return at the closed call gate; no element,
+        // property, animation, behavior handler or host pointer remains active.
+        if (!g_tree_advised)
+            g_dispatcher = {};
     }
     {
         std::lock_guard lock(g_settings_mutex);
@@ -2160,6 +2255,7 @@ MwStatus MW_CALL Stop() {
 } // namespace
 
 #ifdef MW_TASKBAR_CALLBACK_TESTING
+HRESULT TestReusedObservation(const controls::Grid &grid) noexcept;
 extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
     const char* stage="initialization";
     try {
@@ -2203,6 +2299,26 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
         grid.SetValue(column.property, column.value);
         if (controls::Grid::GetColumn(grid) != 2)
             return E_FAIL;
+        stage = "compatible native property owners";
+        const Json solid{{"kind", "solid"}, {"color", "#11223380"}};
+        const auto grid_background = taskbar_xaml::Resolve(grid, "Background", solid);
+        if (grid_background.property != controls::Panel::BackgroundProperty())
+            return E_FAIL;
+        grid.SetValue(grid_background.property, grid_background.value);
+        grid.ClearValue(grid_background.property);
+        shapes::Rectangle rectangle;
+        const auto rectangle_background = taskbar_xaml::Resolve(
+            rectangle, "background", solid, shapes::Shape::FillProperty());
+        if (rectangle_background.property != shapes::Shape::FillProperty())
+            return E_FAIL;
+        rectangle.SetValue(rectangle_background.property, rectangle_background.value);
+        rectangle.ClearValue(rectangle_background.property);
+        try {
+            (void)taskbar_xaml::Resolve(rectangle, "Foreground", solid);
+            return E_FAIL;
+        } catch (const winrt::hresult_error &) {
+            // Control.Foreground must never be returned for a Rectangle.
+        }
         controls::TextBlock label;
         stage = "typography";
         const auto family = taskbar_xaml::Resolve(label, "FontFamily", "Segoe UI");
@@ -2275,6 +2391,8 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
                  {"noiseOpacity", 0.02}});
         taskbar_xaml::ClearCache();
         g_simple_value_cache.clear();
+        stage = "reused observer snapshots";
+        winrt::check_hresult(TestReusedObservation(grid));
         }
         manager.Close();
         if (MwTaskbarConfiguratorEffectDiagnosticsBlock.live_brushes != 0 ||
@@ -2348,12 +2466,73 @@ struct DiagnosticCacheFixture : winrt::implements<DiagnosticCacheFixture,
     HRESULT STDMETHODCALLTYPE GetDispatcher(::IInspectable**) noexcept override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetUiLayer(::IInspectable**) noexcept override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetApplication(::IInspectable**) noexcept override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE GetHandleFromIInspectable(::IInspectable*, InstanceHandle*) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetHandleFromIInspectable(::IInspectable *value,
+                                                        InstanceHandle *handle) noexcept override {
+        if (!value || !handle)
+            return E_POINTER;
+        winrt::com_ptr<IUnknown> identity;
+        const HRESULT result = value->QueryInterface(IID_IUnknown, identity.put_void());
+        if (SUCCEEDED(result))
+            *handle = reinterpret_cast<InstanceHandle>(identity.get());
+        return result;
+    }
     HRESULT STDMETHODCALLTYPE HitTest(RECT, unsigned int*, InstanceHandle**) noexcept override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE RegisterInstance(::IInspectable*, InstanceHandle*) noexcept override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetInitializationData(BSTR*) noexcept override { return E_NOTIMPL; }
     foundation::IInspectable object;
 };
+
+HRESULT TestReusedObservation(const controls::Grid &grid) noexcept {
+    try {
+        auto cache = winrt::make_self<DiagnosticCacheFixture>(7).as<IXamlDiagnostics>();
+        auto watcher = winrt::make_self<VisualTreeWatcher>(cache);
+        grid.Name(L"TaskbarFrame");
+        g_ui_config = Config{};
+        g_ui_config.enabled = false;
+        controls::Button original;
+        xaml::Automation::AutomationProperties::SetAutomationId(original, L"StartButton");
+        grid.Children().Append(original);
+        watcher->RememberRoot(grid);
+        watcher->RememberRoot(grid);
+        for (unsigned cycle = 0; cycle < 6; ++cycle) {
+            grid.Measure({320, 48});
+            grid.Arrange({0, 0, 320, 48});
+            grid.UpdateLayout();
+            InstanceHandle child_handle = 0;
+            winrt::check_hresult(cache->GetHandleFromIInspectable(
+                reinterpret_cast<::IInspectable *>(winrt::get_abi(grid.Children().GetAt(0))),
+                &child_handle));
+            winrt::check_hresult(watcher->SnapshotOnUi());
+            if (g_entries.size() < 2 || !g_entries.contains(child_handle) ||
+                g_entries.at(child_handle).semantic != "startButton") {
+                std::fprintf(
+                    stderr,
+                    "snapshot cycle %u: %zu entries, %d visual children, tracked child %d\n", cycle,
+                    g_entries.size(), media::VisualTreeHelper::GetChildrenCount(grid),
+                    g_entries.contains(child_handle));
+                return E_FAIL;
+            }
+            winrt::check_hresult(RestoreAllOnUi());
+            if (!g_entries.empty())
+                return E_FAIL;
+            // The same weak root must discover replacement children after stop.
+            grid.Children().Clear();
+            controls::Button replacement;
+            xaml::Automation::AutomationProperties::SetAutomationId(replacement, L"StartButton");
+            grid.Children().Append(replacement);
+        }
+        grid.Children().Clear();
+        grid.Name(L"captureGrid");
+        g_ui_config = Config{};
+        {
+            std::lock_guard lock(g_dispatcher_mutex);
+            g_dispatcher = {};
+        }
+        return S_OK;
+    } catch (...) {
+        return winrt::to_hresult();
+    }
+}
 
 extern "C" HRESULT __stdcall MwTaskbarTestDiagnosticCacheResolution(
     uint32_t* expired_skipped, uint32_t* correct_cache,

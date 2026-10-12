@@ -18,7 +18,8 @@ struct Value {
     winrt::Windows::Foundation::IInspectable value{nullptr};
 };
 Value Resolve(const winrt::Windows::UI::Xaml::FrameworkElement &element, std::string_view name,
-              const nlohmann::json &value);
+              const nlohmann::json &value,
+              const winrt::Windows::UI::Xaml::DependencyProperty &known_property = nullptr);
 void ClearCache();
 #ifdef MW_TASKBAR_CALLBACK_TESTING
 void TestBlur(winrt::Windows::UI::Composition::Compositor const &compositor,

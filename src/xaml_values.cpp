@@ -7,6 +7,8 @@
 #include <d2d1effects_2.h>
 #include <d2d1_1.h>
 #include <winrt/Windows.Graphics.Effects.h>
+#include <winrt/Windows.UI.Xaml.Controls.h>
+#include <winrt/Windows.UI.Xaml.Shapes.h>
 #include <winrt/Windows.UI.Xaml.Markup.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Hosting.h>
@@ -324,9 +326,19 @@ void TestBlur(composition::Compositor const &compositor, Json const &settings) {
         winrt::throw_hresult(E_FAIL);
 }
 #endif
-Value Resolve(const xaml::FrameworkElement &element, std::string_view name, const Json &value) {
+Value Resolve(const xaml::FrameworkElement &element, std::string_view name, const Json &value,
+              const xaml::DependencyProperty &known_property) {
     const auto type = winrt::to_string(winrt::get_class_name(element));
-    const auto property = taskbar_config::XamlPropertyName(name);
+    auto property = taskbar_config::XamlPropertyName(name);
+    // A semantic Rectangle background is Fill, not Control.Background.
+    if (known_property) {
+        if (known_property == xaml::Shapes::Shape::FillProperty())
+            property = "Fill";
+        else if (known_property == xaml::FrameworkElement::MarginProperty())
+            property = "Margin";
+        else if (known_property == xaml::Controls::Border::BorderThicknessProperty())
+            property = "BorderThickness";
+    }
     const bool custom = value.is_object() && value.value("kind", "") == "blur";
     const auto compositor =
         custom ? xaml::Hosting::ElementCompositionPreview::GetElementVisual(element).Compositor()
@@ -338,8 +350,24 @@ Value Resolve(const xaml::FrameworkElement &element, std::string_view name, cons
     if (auto found = cache.find(key); found != cache.end())
         return found->second;
     Value result;
-    std::vector<std::string> candidates{type, "Windows.UI.Xaml.Controls.Control",
-                                        "Windows.UI.Xaml.FrameworkElement"};
+    std::vector<std::string> candidates{type};
+    // A setter on an unrelated target class can resolve successfully. Passing
+    // its property index to this element can access incompatible native storage.
+    // Only interfaces actually implemented by the element are valid fallbacks.
+    auto add_candidate = [&]<typename T>(const char *qualified_type) {
+        if (element.try_as<T>() && type != qualified_type)
+            candidates.emplace_back(qualified_type);
+    };
+    add_candidate.template operator()<xaml::Controls::Grid>("Windows.UI.Xaml.Controls.Grid");
+    add_candidate.template operator()<xaml::Controls::Border>("Windows.UI.Xaml.Controls.Border");
+    add_candidate.template operator()<xaml::Controls::ContentPresenter>("Windows.UI.Xaml.Controls.ContentPresenter");
+    add_candidate.template operator()<xaml::Controls::TextBlock>("Windows.UI.Xaml.Controls.TextBlock");
+    add_candidate.template operator()<xaml::Controls::Image>("Windows.UI.Xaml.Controls.Image");
+    add_candidate.template operator()<xaml::Shapes::Rectangle>("Windows.UI.Xaml.Shapes.Rectangle");
+    add_candidate.template operator()<xaml::Shapes::Shape>("Windows.UI.Xaml.Shapes.Shape");
+    add_candidate.template operator()<xaml::Controls::Control>("Windows.UI.Xaml.Controls.Control");
+    add_candidate.template operator()<xaml::Controls::Panel>("Windows.UI.Xaml.Controls.Panel");
+    add_candidate.template operator()<xaml::FrameworkElement>("Windows.UI.Xaml.FrameworkElement");
     HRESULT last = E_INVALIDARG;
     for (const auto &candidate : candidates) {
         try {
@@ -349,6 +377,8 @@ Value Resolve(const xaml::FrameworkElement &element, std::string_view name, cons
             auto style = dictionary.First().Current().Value().as<xaml::Style>();
             auto setter = style.Setters().GetAt(0).as<xaml::Setter>();
             result = {setter.Property(), setter.Value()};
+            if (known_property && result.property != known_property)
+                winrt::throw_hresult(E_INVALIDARG);
             if (value.is_null())
                 result.value = xaml::DependencyProperty::UnsetValue();
             if (custom)
