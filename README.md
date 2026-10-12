@@ -1,63 +1,96 @@
 # MyWallpaper Taskbar Configurator
 
-This native-only MyWallpaper add-on styles parts of the Windows 11 taskbar from the standard add-on settings in MyWallpaper's sidebar. It does not create a separate window or web page. Its companion is supervised by MyWallpaper's native engine, which loads the add-on DLL into the matching Explorer taskbar process.
+This native-only MyWallpaper add-on configures the existing Windows 11 taskbar from MyWallpaper's add-on settings sidebar. It has no separate window or web page. Its companion uses the pinned MyWallpaper native engine to load the add-on DLL into the matching Explorer process. Visual behavior and configuration remain in this repository; the engine ABI and implementation are unchanged by version 0.1.8.
 
-Engine ABI v1 permits one active instance per target. Device-scoped settings do not create a shared principal; activate this prototype in only one layer.
+Engine ABI v1 permits one active instance per target. Activate this prototype in only one layer. Device profiles are isolated by account, published add-on or development source, and settings-schema version. Compatible instances of this same add-on share their values; distinct add-ons targeting Explorer retain independent profiles. Shared values do not merge native sessions or arbitrate competing property writes.
 
-The add-on provides 49 settings, grouped by layout, surface, buttons, motion, Start, system tray, indicators and advanced rules. MyWallpaper supplies the settings editor and search. Five editable presets (macOS-inspired dock, compact dark, glass, rose and mint) apply ordinary settings and then leave every value adjustable. The glass preset uses alpha colors; it does not add a new blur renderer.
+## Configuration without themes
 
-All persisted settings use device scope: compatible instances of this same add-on share one profile for the current account, source and settings-schema version. Distinct add-ons targeting Explorer have independent profiles. Sharing settings does not merge native sessions or arbitrate competing XAML property writes.
+Version 0.1.8 retains the 49 setting IDs and device settings schema **2**, and removes its manifest presets. Existing saved values take precedence over the legacy palette selector. That selector, under Advanced, only fills omitted values in old partial configurations; it no longer locks the editable colors. This intentionally corrects older palette override behavior without discarding stored values. Advanced profile schemas 1 and 2 are both accepted.
 
-New configurations default to **Custom**. The legacy palette selector preserves older profiles; its fixed palette controls are hidden until Custom is selected. **Neutral dark** remains a fixed dark palette. For an editable palette, apply one of the presets. Version 0.1.7 uses device settings schema 2: MyWallpaper offers an explicit review/copy of compatible schema-1 values, while releases still using schema 1 keep their own profile.
+The normal controls cover surface and button colors, opacity, rounding, dimensions, insets, position, activity indicators, Start, system tray and pointer animation parameters. Layout changes the content inside the existing taskbar window. Work-area reservation, other screen edges, auto-hide, flyout position, grouping and notification behavior remain Windows responsibilities. XAML dimensions use logical pixels (DIPs); large transformations can be clipped by the native taskbar window.
 
-Layout controls change content inside the existing taskbar window: Windows, content-fit or fixed width; left/center/right alignment; height, horizontal/vertical inset and offset; button width/height and rotation in degrees; indicator visibility. Dimensions use XAML logical pixels (DIPs). Zero height or button size keeps the native dimension. Work-area reservation, other screen edges, flyout positioning and content outside that window remain Windows responsibilities. A dock-like style can still include native space reserved for widgets and the tray, and large dimensions or motion can be clipped by the taskbar window.
+The optional `advancedProfileJson` field offers **guided fields and raw JSON editing of the same string** in MyWallpaper versions supporting `editor` manifest metadata. Changes stay in a draft until Apply; Discard cancels them. Empty text removes custom rules while retaining the other settings. Older compatible text editors can still edit the JSON directly. The schema belongs to the add-on; MyWallpaper supplies generic controls and the existing persistence path.
 
-Direct styling uses the XAML visual tree exposed by the Windows XAML diagnostics interface. The add-on targets taskbar elements it recognizes by semantic names and types. For other elements, the advanced profile selects XAML elements by semantic, exact `name`, `type` substring, or exact `ancestorName` and applies the properties that exist on that element. A valid rule can match nothing on a particular Windows build; the add-on does not promise a stable private XAML tree across Windows updates.
+### Rules and values
 
-Advanced settings accept an optional JSON object:
+The editor exposes 55 native property names and accepts other named properties or an explicit XAML fragment. A property must actually exist on the selected Windows XAML class. The implementation resolves its dependency property and typed value through Windows XAML, rather than maintaining a separate taskbar property catalog in the engine. Unsupported advanced properties report a diagnostic; ordinary semantic controls skip inapplicable element types.
+
+Selectors combine a semantic target, exact element name, type substring or exact class, named ancestor, direct parent chain, visual root, one-based child index and primitive dependency-property filters. Semantic targets include surface, application buttons, Start, search, widgets, tray, clock, indicator, icon and label. Private names, classes, visual-state groups and child order can change between Windows versions; a valid selector can match nothing.
+
+Supported value families include:
+
+- Solid colors, linear gradients, image brushes, native acrylic, and a custom Composition backdrop blur with tint, saturation, luminosity multiplier and optional procedural grain.
+- Margins, padding, corner radii, sizing and alignment; borders, typography and native attached properties such as `Grid.Column` and `Canvas.ZIndex`.
+- Composite 2D/3D transforms, local `PlaneProjection`, shared `PerspectiveTransform3D`, transform origins and native brush transitions.
+- Grid row and column collections with `Auto`, fixed DIP sizes and star sizes, restored with their original definition objects on cleanup.
+- Shared values, explicit light/dark resources, Windows theme resources, captured dependency-property values, bounded numeric expressions and `null` to clear a local override.
+- Existing Windows visual-state groups and states, and pointer hover/press Composition animations with configurable scales, opacity, timing and easing.
+
+Colors in typed JSON use `#RRGGBB` or MyWallpaper's alpha-last `#RRGGBBAA`; `transparent` is accepted. Explicit raw XAML follows native XAML syntax, including its alpha-first color notation. Plain text is not color-rewritten. Read-only `ActualWidth` and `ActualHeight` are available for capture, not assignment. An expression supports arithmetic, comparisons, ternaries, `min`, `max`, variables and `skip()`; it is not a general-purpose script language. Exponents, logical operators and string concatenation are not supported. Avoid feedback loops such as continuously deriving an element's width from its own measured width.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "variables": { "gap": 16 },
+  "captures": [
+    { "name": "barWidth", "selector": { "name": "TaskbarFrame" }, "property": "ActualWidth" }
+  ],
   "rules": [
     {
-      "selector": { "name": "TaskbarFrame" },
-      "properties": { "opacity": 0.9, "margin": [0, -2] }
+      "selector": { "name": "BackgroundFill", "type": "Rectangle" },
+      "properties": {
+        "Fill": {
+          "kind": "blur", "color": "#FF69B480", "radius": 18,
+          "tintOpacity": 0.35, "saturation": 1.2, "luminosity": 1,
+          "noiseOpacity": 0.02, "fallbackColor": "#7A1746FF"
+        },
+        "RadiusX": 16, "RadiusY": 16
+      }
+    },
+    {
+      "selector": { "type": "TaskListButton" },
+      "properties": { "Width": { "expression": "max(40, min(60, barWidth / 100))" } }
+    },
+    {
+      "selector": { "type": "TaskListButton" },
+      "stateGroup": "CommonStates", "state": "PointerOver",
+      "properties": { "Opacity": 0.8 }
     }
   ],
   "animations": [
-    {
-      "selector": { "semantic": "button" },
-      "hoverScale": 1.1,
-      "pressScale": 0.94,
-      "hoverOpacity": 1,
-      "pressOpacity": 0.88,
-      "hoverDurationMs": 180,
-      "pressDurationMs": 90,
-      "easing": "ease-out"
-    }
+    { "selector": { "semantic": "button" }, "hoverScale": 1.12, "pressScale": 0.96,
+      "hoverDurationMs": 180, "pressDurationMs": 90, "easing": "ease-out" }
   ]
 }
 ```
 
-The rule property names are `background`, `foreground`, `fill`, `stroke`, `opacity`, `cornerRadius`, `strokeThickness`, `width`, `height`, `minWidth`, `maxWidth`, `minHeight`, `maxHeight`, `fontSize`, `rotation`, `margin`, `padding`, `spacing`, `visibility`, `horizontalAlignment`, `verticalAlignment`, `isEnabled`, `isHitTestVisible`, and `text`. Brush colors use `#RRGGBB` or MyWallpaper's alpha-last `#RRGGBBAA`; `transparent` is also accepted. `visibility` accepts `visible` or `collapsed`. `width` and `height` also accept `"auto"`. Rotation uses degrees. Margin may use negative values. Properties that do not apply to the selected XAML type are ignored. `spacing` is expressed through element margins because XAML has no general spacing property. At most 256 rules and 128 animation selectors are accepted to bound repeated visual-tree application work. When multiple animation entries match, the last entry wins. The editor keeps text as a local draft until Apply, so partial JSON does not reach Explorer on every keystroke.
+This example uses private taskbar names and must be checked on the target Windows build. Resources declared as `{ "light": ..., "dark": ... }` are re-evaluated on theme changes. The custom blur uses the target element's compositor, keeps a bounded per-thread value cache, builds its effect graph when connected, and closes its Composition brush and image surface on disconnect. Grain is generated locally; no texture download or Win2D dependency is needed. If advanced effects are disabled, battery saver is active at connection time, or graph creation fails, it uses a solid fallback. Live changes to those Windows preferences are not subscribed to in this prototype.
 
-Property overrides are temporary. The add-on records the original local XAML value and restores it on stop or when an element leaves the taskbar tree. It skips properties that already have bindings, and it removes its property callbacks and pointer event handlers during cleanup. Pointer hover and press motion uses Windows Composition animations. The add-on does not replace Windows taskbar behavior, taskbar auto-hide, app grouping, notification logic, or Explorer's private animation/state machines.
+### Restoration and limits
 
-Each visual-tree observer owns the XAML diagnostics cache that supplied its notifications. If Windows has already released a reported element, resolving its handle can return `ERROR_NOT_FOUND` (`0x80070490`); the add-on skips that stale notification and continues with live elements. Other HRESULT failures remain reported in its diagnostics. This changes neither the engine API nor the 72-byte diagnostics block.
+Overrides record the original local XAML value and restore it on rule removal, stop or removal from the taskbar tree. Existing bindings are preserved instead of replaced. Windows changes to an overridden property's original value are tracked. State, capture and theme subscriptions are revoked with the existing retryable cleanup lifecycle; updates are coalesced on the UI dispatcher, without per-frame layout polling. Failed unregisters retain their cleanup state for retry.
 
-XAML Diagnostics connection and cleanup COM calls run on retained worker threads. Startup waits up to five seconds; if COM does not return in time, the add-on disables itself and reports a pending drain. Stop remains retryable and does not wait indefinitely on the Explorer lifecycle callback. UI-dispatched restoration also has a bounded wait. If it times out, the same pending operation is retained; the next Stop waits on that operation again and reports pending again if it still exceeds the bound. It does not read the visual-tree registry or release cleanup state while that operation is outstanding. Start remains blocked until it has finished and been reaped. A COM call that never returns leaves the add-on in a draining state until Explorer exits, so it cannot be activated again in that process. This preserves module and COM object lifetimes without attempting unsafe thread cancellation.
+The profile is bounded at 1 MiB, 256 rules, 128 animation selectors, 128 captures and 128 shared values/resources. Expressions are limited to 4096 characters and depth 32; reference expansion is limited to depth 16. Resolver caches hold at most 1024 entries and clear during profile changes and cleanup. These bounds constrain work, not what a full-trust native add-on may do outside this profile implementation.
+
+The current observer handles the primary taskbar UI thread. Secondary taskbars on other UI threads are not qualified. Visual-state rules use existing Windows groups; they do not create new taskbar behavior or replace Explorer's animation/state machines. XAML hit testing does not make the surrounding HWND click-through. Moving the taskbar to another screen edge, changing its reserved desktop work area or implementing an arbitrary shell would require separate Windows integration and testing. Typed 3D transformations do not establish compatibility with every taskbar template or graphics driver.
+
+Expired diagnostics handles can return `ERROR_NOT_FOUND` (`0x80070490`); these stale notifications are skipped. Other HRESULT failures remain visible in diagnostics. XAML diagnostics connect/cleanup COM calls run on retained workers with bounded waits. A call that never returns leaves the add-on draining until Explorer exits, rather than cancelling a thread unsafely or releasing referenced modules. Start is blocked until the pending cleanup completes. The existing 72-byte diagnostics block is unchanged; a separate add-on-local 40-byte effect counter block supports test measurements without changing the engine contract.
 
 ## Build
 
-Use Windows 11, Visual Studio 2022 C++ x64 build tools, CMake, Rustup, and Git. The build script installs the pinned Rust 1.94.1 MSVC toolchain if it is missing, checks out the engine revision recorded in `native/dependencies.lock.json`, builds the DLLs and companion, runs the settings parser tests, and writes a release-ready runtime bundle under `native/out/windows-x86_64/`. To use a separate engine checkout, set `MW_NATIVE_ENGINE_ROOT`; release builds require the exact clean pinned commit. `MW_ALLOW_UNPINNED_ENGINE=1` exists only for local integration testing against an in-progress sibling checkout.
+Use Windows 11, Visual Studio 2022 C++ x64 build tools, CMake, Rustup and Git:
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File native/build.ps1
 ```
 
-The output contains `companion.exe`, `mw-native-agent.dll`, `addon.dll`, the engine descriptor, this add-on's license and the engine-generated third-party notices under `native/out/windows-x86_64/`. Each add-on bundle is self-contained; the engine reuses an already loaded agent only when its remote file hash matches exactly. Build intermediates, PDBs, import libraries, and source files are not copied into the runtime bundle.
+The script installs Rust 1.94.1 if needed, verifies the clean engine commit in `native/dependencies.lock.json`, builds the add-on and companion, and runs four CTest suites. The runtime bundle under `native/out/windows-x86_64/` contains the companion, agent, add-on DLL, engine descriptor, license and third-party notices. Intermediate PDBs, libraries and source are not copied into it. The engine reuses an already resident agent only when its file hash matches exactly.
+
+Set `MW_NATIVE_ENGINE_ROOT` to use a separate exact clean pinned engine checkout. `MW_ALLOW_UNPINNED_ENGINE=1` is only for local integration against in-progress source. Regenerate the add-on-owned settings metadata with `node scripts/update-editor.mjs`; no dependency installation is required for that generator.
 
 ## Verification boundary
 
-The portable parser tests verify manifest defaults and every editable preset, legacy profile overrides, alpha-last color validation, geometry range checks, advanced selectors and animation parsing. Windows CTest also checks ownership of the real XAML diagnostics callback's BSTR inputs, observer cache identity and lifetime, recovery after an expired handle, preservation of other HRESULT failures, partial event-subscription rollback and retry, a simulated UI-cleanup timeout followed by late completion, and stale settings-generation handling. An isolated Composition test verifies degree interpretation, restoration of an original radians value, release of the visual reference and XAML automatic width encoding. The timeout test reuses the production completion slot with a deterministic scheduler; it is not an Explorer runtime qualification. This repository's build does not inject into or restart Explorer.
+Parser/manifest tests cover retained setting IDs, explicit values over legacy palette fallbacks, schema 1 compatibility, selector and material validation, expressions, nulls and read-only property rejection. Windows tests additionally cover real XAML diagnostics input/cache lifetimes, expired handles, rollback/retry and queued lifecycle generations; isolated Composition degree interpretation and restoration; and a real XAML host's typed brushes, grid identity restoration, 3D/projection values, captures and subscription revocation. The custom blur graph is connected and disconnected using that host's compositor.
+
+These automated suites do not inject into Explorer. Runtime qualification is a separate local experiment recording DLL/agent hashes, the exact Explorer identity, effect counters, repeated reconfiguration, stop/resume cleanup and process memory. Its evidence applies only to the measured Windows build and test interval; source coverage does not establish parity with every Windhawk theme or universal Windows compatibility. There is no claim of hour-long memory behavior from a short run or of independent GPU leak detection from shared allocation counters.

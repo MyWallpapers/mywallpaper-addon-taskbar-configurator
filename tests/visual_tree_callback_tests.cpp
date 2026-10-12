@@ -41,8 +41,14 @@ extern "C" HRESULT __stdcall MwTaskbarTestLateCleanupCompletion(
 extern "C" HRESULT __stdcall MwTaskbarTestStaleApplyGeneration(
     uint32_t* stale_preserved_queue, uint32_t* current_cleared_queue) noexcept;
 extern "C" HRESULT __stdcall MwTaskbarTestRotationAndAutoDimension() noexcept;
+extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept;
 
 int wmain(int argc, wchar_t** argv) {
+    if(argc==2 && std::wcscmp(argv[1],L"--rich-xaml")==0) {
+        const auto result=MwTaskbarTestRichXaml();
+        if(FAILED(result)){std::wcerr<<L"rich XAML and effect restoration failed: 0x"<<std::hex<<result<<L'\n';return 9;}
+        std::wcout<<L"Native properties, materials, grid collection restoration and effect teardown verified\n";return 0;
+    }
     if (argc == 2 && std::wcscmp(argv[1], L"--composition") == 0) {
         const HRESULT result = MwTaskbarTestRotationAndAutoDimension();
         if (result != S_OK) {

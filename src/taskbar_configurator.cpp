@@ -3,6 +3,7 @@
 #include "mw_call_gate.hpp"
 #include "taskbar_config.hpp"
 #include "taskbar_diagnostics.h"
+#include "xaml_values.hpp"
 
 #include <Windows.h>
 #include <ocidl.h>
@@ -10,14 +11,18 @@
 #undef GetCurrentTime
 
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.Numerics.h>
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.UI.Composition.h>
 #include <winrt/Windows.UI.Xaml.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
+#include <winrt/Windows.UI.Xaml.Automation.h>
 #include <winrt/Windows.UI.Xaml.Hosting.h>
 #include <winrt/Windows.UI.Xaml.Input.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
+#include <winrt/Windows.UI.Xaml.Media.Media3D.h>
+#include <winrt/Windows.UI.Xaml.Markup.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 #ifdef MW_TASKBAR_CALLBACK_TESTING
 #include <DispatcherQueue.h>
@@ -33,6 +38,7 @@
 #include <cmath>
 #include <cwchar>
 #include <cwctype>
+#include <cstdio>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -78,6 +84,7 @@ Config g_pending_config;
 uint64_t g_pending_revision = 0;
 bool g_apply_queued = false;
 Config g_ui_config;
+uint64_t g_ui_profile_revision = 0;
 
 // These objects are reused across Start/Stop cycles. The engine keeps the
 // image resident, so callback code and hook continuation storage remain valid.
@@ -204,6 +211,8 @@ struct PropertyState {
     int64_t callback_token = 0;
     bool has_callback = false;
     bool callback_enabled = false;
+    Json collection_values;
+    std::vector<foundation::IInspectable> collection_original;
 };
 
 struct ElementEntry {
@@ -217,6 +226,11 @@ struct ElementEntry {
     std::vector<PropertyState> properties;
     bool writing = false;
     bool matched = false;
+    std::vector<std::pair<xaml::VisualStateGroup, winrt::event_token>> state_handlers;
+    std::vector<std::pair<xaml::DependencyProperty, int64_t>> capture_handlers;
+    uint64_t subscription_revision = 0;
+    winrt::event_token theme_token{};
+    bool theme_handler = false;
 
     bool has_visual = false;
     bool entered_handler = false;
@@ -241,6 +255,13 @@ struct ElementEntry {
 };
 
 std::map<uint64_t, ElementEntry> g_entries;
+const MwHostApi* g_host_api = nullptr;
+std::map<std::string, bool> g_reported_rules;
+void ReportRule(const std::string& message) {
+    if (g_reported_rules.size() >= 64 || g_reported_rules.contains(message)) return;
+    g_reported_rules.emplace(message,true);
+    if (g_host_api && g_host_api->log) (void)g_host_api->log(g_host_api->addon_context,message.c_str());
+}
 
 template <typename Register>
 HRESULT RegisterTrackedHandler(bool& registered, winrt::event_token& token,
@@ -299,7 +320,7 @@ HRESULT RevokeFourTrackedHandlers(
 
 bool HasTrackedState(const ElementEntry& entry) noexcept {
     return !entry.properties.empty() || PointerHandlerCount(entry) != 0 ||
-        entry.has_visual || entry.rotation_saved;
+        entry.has_visual || entry.rotation_saved || !entry.state_handlers.empty() || !entry.capture_handlers.empty() || entry.theme_handler;
 }
 
 void SetDiagnostic(uint64_t* field, uint64_t value) noexcept {
@@ -440,6 +461,13 @@ xaml::DependencyProperty PropertyFor(const xaml::FrameworkElement& element,
         if (name == "fontSize") return controls::TextBlock::FontSizeProperty();
         if (name == "text") return controls::TextBlock::TextProperty();
     }
+    if (auto panel = element.try_as<controls::Panel>()) {
+        if (name == "background") return controls::Panel::BackgroundProperty();
+    }
+    if (element.try_as<shapes::Rectangle>()) {
+        if (name == "radiusX") return shapes::Rectangle::RadiusXProperty();
+        if (name == "radiusY") return shapes::Rectangle::RadiusYProperty();
+    }
     return nullptr;
 }
 
@@ -453,7 +481,7 @@ foundation::IInspectable MakePropertyValue(const xaml::FrameworkElement& element
     }
     if (name == "opacity" || name == "width" || name == "height" ||
         name == "minWidth" || name == "maxWidth" || name == "minHeight" ||
-        name == "maxHeight" || name == "fontSize" || name == "rotation") {
+        name == "maxHeight" || name == "fontSize" || name == "rotation" || name == "radiusX" || name == "radiusY") {
         return winrt::box_value(static_cast<float>(value.get<double>()));
     }
     if (name == "cornerRadius") {
@@ -507,21 +535,152 @@ foundation::IInspectable MakePropertyValue(const xaml::FrameworkElement& element
     return nullptr;
 }
 
-bool SelectorMatches(const taskbar_config::Selector& selector, const ElementEntry& entry) {
-    if (!selector.semantic.empty() && selector.semantic != entry.semantic) return false;
-    if (!selector.name.empty() && selector.name != entry.name) return false;
-    if (!selector.type.empty() && entry.type.find(selector.type) == std::string::npos) return false;
+Json ReadPrimitive(const foundation::IInspectable& value) {
+    if (auto property = value.try_as<foundation::IPropertyValue>()) {
+        switch (property.Type()) {
+        case foundation::PropertyType::Double:
+            return property.GetDouble();
+        case foundation::PropertyType::Single:
+            return property.GetSingle();
+        case foundation::PropertyType::Int32:
+            return property.GetInt32();
+        case foundation::PropertyType::UInt32:
+            return property.GetUInt32();
+        case foundation::PropertyType::Boolean:
+            return property.GetBoolean();
+        case foundation::PropertyType::String:
+            return winrt::to_string(property.GetString());
+        default:
+            break;
+        }
+    }
+    return nullptr;
+}
+void Classify(ElementEntry &entry);
+xaml::DependencyProperty CaptureProperty(const ElementEntry &entry, const std::string &property);
+bool SelectorMatches(const taskbar_config::Selector &selector, const ElementEntry &entry) {
+    if (!selector.semantic.empty() && selector.semantic != entry.semantic)
+        return false;
+    if (!selector.name.empty() && selector.name != entry.name)
+        return false;
+    if (!selector.type.empty() &&
+        (selector.exact_type ? entry.type != selector.type
+                             : entry.type.find(selector.type) == std::string::npos))
+        return false;
     if (!selector.ancestor_name.empty() &&
         std::find(entry.ancestor_names.begin(), entry.ancestor_names.end(),
-            selector.ancestor_name) == entry.ancestor_names.end()) return false;
+                  selector.ancestor_name) == entry.ancestor_names.end())
+        return false;
+    auto parent = media::VisualTreeHelper::GetParent(entry.element);
+    if (selector.root && parent)
+        return false;
+    if (selector.index) {
+        if (!parent ||
+            selector.index >
+                static_cast<uint32_t>(media::VisualTreeHelper::GetChildrenCount(parent)) ||
+            media::VisualTreeHelper::GetChild(parent, static_cast<int>(selector.index) - 1) !=
+                entry.element)
+            return false;
+    }
+    for (auto item = selector.where.begin(); item != selector.where.end(); ++item) {
+        try {
+            const auto property = CaptureProperty(entry, item.key());
+            if (ReadPrimitive(entry.element.GetValue(property)) != item.value())
+                return false;
+        } catch (...) {
+            return false;
+        }
+    }
+    for (const auto &expected : selector.parents) {
+        auto element = parent.try_as<xaml::FrameworkElement>();
+        if (!element)
+            return false;
+        ElementEntry ancestor;
+        ancestor.element = element;
+        ancestor.name = winrt::to_string(element.Name());
+        ancestor.type = winrt::to_string(winrt::get_class_name(element));
+        Classify(ancestor);
+        auto relative = media::VisualTreeHelper::GetParent(element);
+        for (unsigned depth = 0; relative && depth < 64; ++depth) {
+            if (auto named = relative.try_as<xaml::FrameworkElement>())
+                ancestor.ancestor_names.push_back(winrt::to_string(named.Name()));
+            relative = media::VisualTreeHelper::GetParent(relative);
+        }
+        if (!SelectorMatches(expected, ancestor))
+            return false;
+        parent = media::VisualTreeHelper::GetParent(parent);
+    }
     return true;
 }
 
-void AddDesiredProperty(ElementEntry& entry, std::vector<PropertyState>* desired,
-    const std::string& property_name, const Json& value) {
+Json g_live_variables = Json::object();
+std::map<std::string, foundation::IInspectable> g_simple_value_cache;
+Json ExpandValue(const ElementEntry &entry, const Json &value, unsigned depth = 0) {
+    if (depth > 16)
+        throw std::runtime_error("cyclic value reference");
+    if (value.is_array()) {
+        auto result = Json::array();
+        for (const auto &v : value)
+            result.push_back(ExpandValue(entry, v, depth + 1));
+        return result;
+    }
+    if (!value.is_object())
+        return value;
+    if (value.contains("expression"))
+        return taskbar_config::EvaluateExpression(value.at("expression").get<std::string>(),
+                                                  g_live_variables);
+    if (value.contains("ref")) {
+        const auto found = g_live_variables.find(value.at("ref").get<std::string>());
+        return found == g_live_variables.end() ? Json(nullptr)
+                                               : ExpandValue(entry, *found, depth + 1);
+    }
+    if (value.contains("resource")) {
+        const auto found = g_ui_config.resources.find(value.at("resource").get<std::string>());
+        if (found != g_ui_config.resources.end()) {
+            const bool dark = entry.element.ActualTheme() == xaml::ElementTheme::Dark;
+            if (found->is_object() && found->contains(dark ? "dark" : "light"))
+                return ExpandValue(entry, found->at(dark ? "dark" : "light"), depth + 1);
+            return ExpandValue(entry, *found, depth + 1);
+        }
+    }
+    auto result = value;
+    for (auto it = result.begin(); it != result.end(); ++it)
+        it.value() = ExpandValue(entry, it.value(), depth + 1);
+    return result;
+}
+
+void AddDesiredProperty(ElementEntry &entry, std::vector<PropertyState> *desired,
+                        const std::string &property_name, const Json &value, bool strict = false) {
+    if (property_name == "ColumnDefinitions" || property_name == "RowDefinitions") {
+        if (!entry.element.try_as<controls::Grid>()) {
+            SetLastError(E_INVALIDARG);
+            return;
+        }
+        PropertyState state;
+        state.name = property_name;
+        state.collection_values = ExpandValue(entry, value);
+        const auto existing = std::find_if(desired->begin(), desired->end(), [&](const auto &item) {
+            return item.name == property_name;
+        });
+        if (existing == desired->end())
+            desired->push_back(std::move(state));
+        else
+            *existing = std::move(state);
+        return;
+    }
+    if (property_name == "cornerRadius" && entry.element.try_as<shapes::Rectangle>()) {
+        AddDesiredProperty(entry, desired, "radiusX", value, strict);
+        AddDesiredProperty(entry, desired, "radiusY", value, strict);
+        return;
+    }
     if (property_name == "rotation") {
+        const auto expanded = ExpandValue(entry, value);
+        if (expanded.is_null() || expanded.is_object())
+            return;
         if (!entry.has_visual) {
-            entry.visual = winrt::Windows::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(entry.ui_element);
+            entry.visual =
+                winrt::Windows::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(
+                    entry.ui_element);
             entry.original_scale = entry.visual.Scale();
             entry.original_opacity = entry.visual.Opacity();
             entry.original_rotation = entry.visual.RotationAngle();
@@ -530,19 +689,61 @@ void AddDesiredProperty(ElementEntry& entry, std::vector<PropertyState>* desired
         }
         PropertyState state;
         state.name = property_name;
-        state.desired = winrt::box_value(static_cast<float>(value.get<double>()));
+        state.desired = winrt::box_value(static_cast<float>(expanded.get<double>()));
         desired->push_back(std::move(state));
         return;
     }
-    const auto property = PropertyFor(entry.element, property_name);
-    if (!property) return;
-    auto inspectable = MakePropertyValue(entry.element, property_name, value);
-    if (!inspectable) return;
+    auto property = PropertyFor(entry.element, property_name);
+    // A guided semantic target spans different native types. Skip a legacy
+    // control that has no corresponding property on this particular element;
+    // explicit rules use strict resolution and report incompatible targets.
+    if (!property && !strict && !property_name.empty() &&
+        std::islower(static_cast<unsigned char>(property_name.front()))) return;
+    foundation::IInspectable inspectable{nullptr};
+    try {
+        const auto expanded = ExpandValue(entry, value);
+        if (expanded.is_object() && expanded.contains("$skip"))
+            return;
+        if (value.is_object() && (value.contains("expression") || value.contains("ref")) &&
+            expanded.is_null())
+            return;
+        if (property && !expanded.is_object() && !expanded.is_null() &&
+            !(property_name == "cornerRadius" && expanded.is_array())) {
+            const auto key = entry.type + ":" + property_name + ":" + expanded.dump();
+            auto found = g_simple_value_cache.find(key);
+            if (found != g_simple_value_cache.end())
+                inspectable = found->second;
+            else {
+                inspectable = MakePropertyValue(entry.element, property_name, expanded);
+                if (inspectable) {
+                    if (g_simple_value_cache.size() >= 1024)
+                        g_simple_value_cache.clear();
+                    g_simple_value_cache.emplace(key, inspectable);
+                }
+            }
+        }
+        if (!property || !inspectable) {
+            const auto resolved = taskbar_xaml::Resolve(entry.element, property_name, expanded);
+            property = resolved.property;
+            inspectable = resolved.value;
+        }
+    } catch (...) {
+        const auto failure = winrt::to_hresult();
+        SetLastError(failure);
+        ReportRule("Cannot apply " + property_name + " on " + entry.type + "#" + entry.name +
+                   " (HRESULT " + std::to_string(static_cast<int32_t>(failure)) + ")");
+        return;
+    }
     PropertyState state;
     state.property = property;
     state.name = property_name;
     state.desired = std::move(inspectable);
-    desired->push_back(std::move(state));
+    const auto previous = std::find_if(desired->begin(), desired->end(),
+                                       [&](const auto &v) { return v.property == state.property; });
+    if (previous == desired->end())
+        desired->push_back(std::move(state));
+    else
+        *previous = std::move(state);
 }
 
 void AddColor(ElementEntry& entry, std::vector<PropertyState>* desired,
@@ -634,7 +835,7 @@ void UpdateDiagnostics() {
         const auto& entry = pair.second;
         if (entry.matched) ++matched;
         properties += static_cast<uint64_t>(entry.properties.size());
-        handlers += PointerHandlerCount(entry);
+        handlers += PointerHandlerCount(entry) + entry.state_handlers.size() + entry.capture_handlers.size() + static_cast<uint64_t>(entry.theme_handler);
         if (entry.animation_counted) ++animations;
     }
     SetDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.matchedElements, matched);
@@ -658,8 +859,54 @@ HRESULT RemovePropertyCallback(ElementEntry& entry, PropertyState& state) noexce
     }
 }
 
-bool IsUnset(const foundation::IInspectable& value) {
+bool IsUnset(const foundation::IInspectable &value) {
     return value == xaml::DependencyProperty::UnsetValue();
+}
+bool SameProperty(const PropertyState &a, const PropertyState &b) {
+    return a.property && b.property ? a.property == b.property
+                                    : !a.property && !b.property && a.name == b.name;
+}
+xaml::GridLength GridSize(const Json &value) {
+    if (value.is_number())
+        return {value.get<double>(), xaml::GridUnitType::Pixel};
+    const auto text = value.get<std::string>();
+    if (text == "Auto" || text == "auto")
+        return {1, xaml::GridUnitType::Auto};
+    const bool star = !text.empty() && text.back() == '*';
+    const auto literal = star ? text.substr(0, text.size() - 1) : text;
+    size_t used = 0;
+    const double size = literal.empty() && star ? 1 : std::stod(literal, &used);
+    if ((!literal.empty() && used != literal.size()) || !std::isfinite(size) || size < 0)
+        winrt::throw_hresult(E_INVALIDARG);
+    return {size, star ? xaml::GridUnitType::Star : xaml::GridUnitType::Pixel};
+}
+void SetGridCollection(ElementEntry &entry, const PropertyState &state, bool restore) {
+    const auto grid = entry.element.as<controls::Grid>();
+    if (state.name == "ColumnDefinitions") {
+        std::vector<controls::ColumnDefinition> next;
+        if (restore)
+            for (const auto &value : state.collection_original)
+                next.push_back(value.as<controls::ColumnDefinition>());
+        else if (!state.collection_values.is_null())
+            for (const auto &value : state.collection_values.at("sizes")) {
+                controls::ColumnDefinition column;
+                column.Width(GridSize(value));
+                next.push_back(column);
+            }
+        grid.ColumnDefinitions().ReplaceAll(next);
+    } else {
+        std::vector<controls::RowDefinition> next;
+        if (restore)
+            for (const auto &value : state.collection_original)
+                next.push_back(value.as<controls::RowDefinition>());
+        else if (!state.collection_values.is_null())
+            for (const auto &value : state.collection_values.at("sizes")) {
+                controls::RowDefinition row;
+                row.Height(GridSize(value));
+                next.push_back(row);
+            }
+        grid.RowDefinitions().ReplaceAll(next);
+    }
 }
 
 /*
@@ -669,6 +916,11 @@ bool IsUnset(const foundation::IInspectable& value) {
  */
 HRESULT RestoreProperty(ElementEntry& entry, PropertyState& state) noexcept {
     HRESULT result = RemovePropertyCallback(entry, state);
+    if(state.name=="ColumnDefinitions" || state.name=="RowDefinitions") {
+        try { SetGridCollection(entry,state,true);IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.restoreCount); }
+        catch (...) { RecordFirstFailure(&result,winrt::to_hresult()); }
+        return result;
+    }
     if (state.name == "rotation") {
         if (entry.rotation_saved) {
             if (!entry.has_visual || !entry.visual) return FAILED(result) ? result : E_PENDING;
@@ -746,9 +998,37 @@ HRESULT RegisterPropertyCallback(ElementEntry& entry, PropertyState& state) noex
     }
 }
 
-bool ApplyProperty(ElementEntry& entry, PropertyState& desired) {
+bool ApplyProperty(ElementEntry &entry, PropertyState &desired) {
+    if (desired.name == "ColumnDefinitions" || desired.name == "RowDefinitions") {
+        auto stored = std::find_if(entry.properties.begin(), entry.properties.end(),
+                                   [&](const auto &state) { return SameProperty(state, desired); });
+        if (stored == entry.properties.end()) {
+            const auto grid = entry.element.as<controls::Grid>();
+            if (desired.name == "ColumnDefinitions")
+                for (const auto &column : grid.ColumnDefinitions())
+                    desired.collection_original.push_back(column);
+            else
+                for (const auto &row : grid.RowDefinitions())
+                    desired.collection_original.push_back(row);
+            entry.properties.push_back(std::move(desired));
+            stored = std::prev(entry.properties.end());
+        } else if (stored->collection_values == desired.collection_values)
+            return true;
+        else
+            stored->collection_values = desired.collection_values;
+        try {
+            SetGridCollection(entry, *stored, false);
+            return true;
+        } catch (...) {
+            SetLastError(winrt::to_hresult());
+            if (SUCCEEDED(RestoreProperty(entry, *stored)))
+                entry.properties.erase(stored);
+            return false;
+        }
+    }
     if (desired.name == "rotation") {
-        if (!entry.has_visual) return false;
+        if (!entry.has_visual)
+            return false;
         if (!entry.rotation_saved) {
             entry.original_rotation = entry.visual.RotationAngle();
             entry.rotation_saved = true;
@@ -762,10 +1042,10 @@ bool ApplyProperty(ElementEntry& entry, PropertyState& desired) {
     }
     auto object = entry.element.try_as<xaml::DependencyObject>();
     if (!object) return false;
-    if (entry.element.GetBindingExpression(desired.property)) return false;
+    if (entry.element.GetBindingExpression(desired.property)) {ReportRule("Preserved Windows binding: "+desired.name+" on "+entry.type+"#"+entry.name);return false;}
 
     auto state = std::find_if(entry.properties.begin(), entry.properties.end(),
-        [&](const PropertyState& candidate) { return candidate.name == desired.name; });
+        [&](const PropertyState& candidate) { return candidate.property == desired.property; });
     if (state == entry.properties.end()) {
         PropertyState stored;
         stored.property = desired.property;
@@ -782,7 +1062,8 @@ bool ApplyProperty(ElementEntry& entry, PropertyState& desired) {
 
     entry.writing = true;
     try {
-        object.SetValue(state->property, state->desired);
+        if (IsUnset(state->desired)) object.ClearValue(state->property);
+        else object.SetValue(state->property, state->desired);
     } catch (...) {
         entry.writing = false;
         SetLastError(winrt::to_hresult());
@@ -1017,7 +1298,7 @@ void BuildDirectProperties(ElementEntry& entry, const Config& config,
         }
     } else if (entry.semantic == "indicator") {
         AddColor(entry, desired, "fill", config.indicator_color);
-        AddNumber(entry, desired, "strokeThickness", config.indicator_thickness);
+        AddNumber(entry, desired, "height", config.indicator_thickness);
         AddNumber(entry, desired, "cornerRadius", config.indicator_radius);
         if (!config.indicator_visible)
             AddDesiredProperty(entry, desired, "visibility", Json("collapsed"));
@@ -1034,9 +1315,20 @@ void BuildDirectProperties(ElementEntry& entry, const Config& config,
     }
 
     for (const auto& rule : config.rules) {
-        if (!SelectorMatches(rule.selector, entry)) continue;
+        if (!rule.enabled || !SelectorMatches(rule.selector, entry)) continue;
+        if (!rule.state.empty()) {
+            bool active = false;
+            xaml::DependencyObject current = entry.element;
+            for (int depth = 0; current && depth < 64 && !active; ++depth) {
+                if (auto target = current.try_as<xaml::FrameworkElement>())
+                    for (const auto& group : xaml::VisualStateManager::GetVisualStateGroups(target))
+                        if (winrt::to_string(group.Name()) == rule.state_group && group.CurrentState() && winrt::to_string(group.CurrentState().Name()) == rule.state) active = true;
+                current = media::VisualTreeHelper::GetParent(current);
+            }
+            if (!active) continue;
+        }
         for (auto property = rule.properties.begin(); property != rule.properties.end(); ++property) {
-            AddDesiredProperty(entry, desired, property.key(), property.value());
+            AddDesiredProperty(entry, desired, property.key(), property.value(), true);
         }
     }
 }
@@ -1055,13 +1347,165 @@ void ConfigureAdvancedMotion(ElementEntry& entry, const Config& config) {
     }
 }
 
+void ApplyAllOnUi();
+bool g_dynamic_queued = false;
+void QueueDynamicApply() noexcept {
+    if (g_dynamic_queued || !g_active.load(std::memory_order_acquire))
+        return;
+    try {
+        if (!g_dispatcher)
+            return;
+        const auto generation = g_lifecycle_generation.load(std::memory_order_acquire);
+        g_dynamic_queued = true;
+        g_dispatcher.get().RunAsync(
+            winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [generation] {
+                auto guard = g_call_gate.Enter();
+                if (generation != g_lifecycle_generation.load(std::memory_order_acquire))
+                    return;
+                g_dynamic_queued = false;
+                if (guard)
+                    ApplyAllOnUi();
+            });
+    } catch (...) {
+        g_dynamic_queued = false;
+        SetLastError(winrt::to_hresult());
+    }
+}
+HRESULT RevokeRuleHandlers(ElementEntry &entry) noexcept {
+    HRESULT result = S_OK;
+    for (auto it = entry.state_handlers.begin(); it != entry.state_handlers.end();) {
+        try {
+            it->first.CurrentStateChanged(it->second);
+            it = entry.state_handlers.erase(it);
+        } catch (...) {
+            RecordFirstFailure(&result, winrt::to_hresult());
+            ++it;
+        }
+    }
+    for (auto it = entry.capture_handlers.begin(); it != entry.capture_handlers.end();) {
+        try {
+            entry.element.UnregisterPropertyChangedCallback(it->first, it->second);
+            it = entry.capture_handlers.erase(it);
+        } catch (...) {
+            RecordFirstFailure(&result, winrt::to_hresult());
+            ++it;
+        }
+    }
+    if (entry.theme_handler) {
+        try {
+            entry.element.ActualThemeChanged(entry.theme_token);
+            entry.theme_handler = false;
+        } catch (...) {
+            RecordFirstFailure(&result, winrt::to_hresult());
+        }
+    }
+    if (SUCCEEDED(result))
+        entry.subscription_revision = 0;
+    return result;
+}
+xaml::DependencyProperty CaptureProperty(const ElementEntry &entry, const std::string &property) {
+    if (property == "ActualWidth" || property == "actualWidth")
+        return xaml::FrameworkElement::ActualWidthProperty();
+    if (property == "ActualHeight" || property == "actualHeight")
+        return xaml::FrameworkElement::ActualHeightProperty();
+    return taskbar_xaml::Resolve(entry.element, property, nullptr).property;
+}
+void ConfigureRuleHandlers(ElementEntry &entry) {
+    if (g_ui_profile_revision == entry.subscription_revision)
+        return;
+    if (FAILED(RevokeRuleHandlers(entry)))
+        return;
+    if (!g_ui_config.enabled) {
+        entry.subscription_revision = g_ui_profile_revision;
+        return;
+    }
+    try {
+        for (const auto &rule : g_ui_config.rules) {
+            if (!rule.enabled || rule.state_group.empty() || !SelectorMatches(rule.selector, entry))
+                continue;
+            xaml::DependencyObject current = entry.element;
+            for (unsigned depth = 0; current && depth < 64; ++depth) {
+                if (auto target = current.try_as<xaml::FrameworkElement>())
+                    for (const auto &group :
+                         xaml::VisualStateManager::GetVisualStateGroups(target)) {
+                        if (winrt::to_string(group.Name()) != rule.state_group ||
+                            std::any_of(entry.state_handlers.begin(), entry.state_handlers.end(),
+                                        [&](const auto &pair) { return pair.first == group; }))
+                            continue;
+                        const auto token =
+                            group.CurrentStateChanged([](auto const &, auto const &) {
+                                auto guard = g_call_gate.Enter();
+                                if (guard)
+                                    QueueDynamicApply();
+                            });
+                        entry.state_handlers.emplace_back(group, token);
+                    }
+                current = media::VisualTreeHelper::GetParent(current);
+            }
+        }
+        for (const auto &capture : g_ui_config.captures) {
+            if (!SelectorMatches(taskbar_config::ParseSelectorJson(capture.at("selector")), entry))
+                continue;
+            const auto property = CaptureProperty(entry, capture.at("property").get<std::string>());
+            if (std::any_of(entry.capture_handlers.begin(), entry.capture_handlers.end(),
+                            [&](const auto &pair) { return pair.first == property; }))
+                continue;
+            const auto token = entry.element.RegisterPropertyChangedCallback(
+                property, [handle = entry.handle](auto const &, auto const &) {
+                    auto guard = g_call_gate.Enter();
+                    if (!guard)
+                        return;
+                    const auto found = g_entries.find(handle);
+                    if (found != g_entries.end() && !found->second.writing)
+                        QueueDynamicApply();
+                });
+            entry.capture_handlers.emplace_back(property, token);
+        }
+        if (!g_ui_config.resources.empty() || !g_ui_config.rules.empty()) {
+            entry.theme_token = entry.element.ActualThemeChanged([](auto const &, auto const &) {
+                auto guard = g_call_gate.Enter();
+                if (guard) {
+                    taskbar_xaml::ClearCache();
+                    QueueDynamicApply();
+                }
+            });
+            entry.theme_handler = true;
+        }
+        entry.subscription_revision = g_ui_profile_revision;
+    } catch (...) {
+        SetLastError(winrt::to_hresult());
+        (void)RevokeRuleHandlers(entry);
+    }
+}
+
+void ReadCaptures() {
+    g_live_variables = g_ui_config.variables;
+    for (const auto &capture : g_ui_config.captures) {
+        const auto selector = taskbar_config::ParseSelectorJson(capture.at("selector"));
+        for (const auto &[handle, entry] : g_entries) {
+            (void)handle;
+            if (!SelectorMatches(selector, entry))
+                continue;
+            try {
+                g_live_variables[capture.at("name").get<std::string>()] =
+                    ReadPrimitive(entry.element.GetValue(
+                        CaptureProperty(entry, capture.at("property").get<std::string>())));
+                break;
+            } catch (...) {
+                SetLastError(winrt::to_hresult());
+            }
+        }
+    }
+}
+
 void ApplyEntry(ElementEntry& entry) {
+    ConfigureRuleHandlers(entry);
     std::vector<PropertyState> desired;
     BuildDirectProperties(entry, g_ui_config, &desired);
 
     for (auto it = entry.properties.begin(); it != entry.properties.end();) {
         const bool still_desired = std::any_of(desired.begin(), desired.end(),
-            [&](const PropertyState& target) { return target.property == it->property; });
+            [&](const PropertyState& target) { return SameProperty(target, *it); });
         if (still_desired) { ++it; continue; }
         const HRESULT restored = RestoreProperty(entry, *it);
         if (SUCCEEDED(restored)) it = entry.properties.erase(it);
@@ -1087,6 +1531,7 @@ void ApplyEntry(ElementEntry& entry) {
 HRESULT RestoreEntry(ElementEntry& entry) noexcept {
     entry.pointer_animation_enabled = false;
     HRESULT result = RevokePointerHandlers(entry);
+    RecordFirstFailure(&result, RevokeRuleHandlers(entry));
     RecordFirstFailure(&result, RestoreVisual(entry));
     for (std::size_t index = entry.properties.size(); index > 0; --index) {
         const HRESULT restored = RestoreProperty(entry, entry.properties[index - 1]);
@@ -1135,7 +1580,8 @@ void PropertyChanged(uint64_t handle, xaml::DependencyProperty property,
         }
         state->original = object.ReadLocalValue(property);
         entry.writing = true;
-        object.SetValue(property, state->desired);
+        if (IsUnset(state->desired)) object.ClearValue(property);
+        else object.SetValue(property, state->desired);
         entry.writing = false;
     } catch (...) {
         entry.writing = false;
@@ -1145,6 +1591,7 @@ void PropertyChanged(uint64_t handle, xaml::DependencyProperty property,
 
 void ApplyAllOnUi() {
     SetLastError(S_OK);
+    ReadCaptures();
     for (auto& pair : g_entries) ApplyEntry(pair.second);
     IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.settingsApplied);
 }
@@ -1203,6 +1650,9 @@ bool ScheduleSettingsApply(const std::shared_ptr<Config>& config) {
                         revision = g_pending_revision;
                     }
                     g_ui_config = std::move(next);
+                    ++g_ui_profile_revision;
+                    taskbar_xaml::ClearCache();
+                g_simple_value_cache.clear();g_reported_rules.clear();
                     ApplyAllOnUi();
                     std::lock_guard lock(g_settings_mutex);
                     if (revision == g_pending_revision) {
@@ -1238,8 +1688,19 @@ void Classify(ElementEntry& entry) {
     } else if (lower_name.find(L"indicator") != std::wstring::npos ||
         lower_name.find(L"underline") != std::wstring::npos) {
         entry.semantic = "indicator";
-    } else if (lower_name.find(L"start") != std::wstring::npos) {
+    } else if (lower_name.find(L"start") != std::wstring::npos ||
+        xaml::Automation::AutomationProperties::GetAutomationId(entry.element) == L"StartButton") {
         entry.semantic = "startButton";
+    } else if (lower_name.find(L"search") != std::wstring::npos || lower_type.find(L"searchboxbutton") != std::wstring::npos) {
+        entry.semantic = "search";
+    } else if (lower_type.find(L"augmentedentrypoint") != std::wstring::npos) {
+        entry.semantic = "widgets";
+    } else if (lower_name.find(L"clock") != std::wstring::npos) {
+        entry.semantic = "clock";
+    } else if (lower_name == L"icon" || lower_type.find(L"image") != std::wstring::npos) {
+        entry.semantic = "icon";
+    } else if (lower_type.find(L"textblock") != std::wstring::npos) {
+        entry.semantic = "label";
     } else if (lower_name.find(L"systemtray") != std::wstring::npos ||
         lower_name.find(L"notificationarea") != std::wstring::npos ||
         lower_name.find(L"clock") != std::wstring::npos ||
@@ -1307,7 +1768,7 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
                     const auto name = parent_element.Name();
                     if (!name.empty()) {
                         const auto utf8_name = ToUtf8(name);
-                        if (name == L"TaskbarFrame") belongs_to_taskbar = true;
+                        if (name == L"TaskbarFrame" || name == L"SystemTrayFrame" || name == L"SystemTrayFrameGrid") belongs_to_taskbar = true;
                         ancestor_names.push_back(utf8_name);
                     }
                 }
@@ -1315,7 +1776,7 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
             }
             const std::wstring own_name = BstrText(value.Name);
             const std::wstring own_type = BstrText(value.Type);
-            if (!belongs_to_taskbar && own_name != L"TaskbarFrame") return S_OK;
+            if (!belongs_to_taskbar && own_name != L"TaskbarFrame" && own_name != L"SystemTrayFrame" && own_name != L"SystemTrayFrameGrid" && own_type.find(L"Taskbar.") == std::wstring::npos && own_type.find(L"SystemTray.") == std::wstring::npos) return S_OK;
 
             ElementEntry entry;
             entry.handle = handle;
@@ -1332,6 +1793,7 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
             auto [it, inserted] = g_entries.emplace(handle, std::move(entry));
             if (inserted) {
                 ApplyEntry(it->second);
+                if (!g_ui_config.captures.empty()) QueueDynamicApply();
                 UpdateDiagnostics();
             }
             return S_OK;
@@ -1513,6 +1975,10 @@ HRESULT RestoreAllOnUi() noexcept {
     }
     UpdateDiagnostics();
     if (!g_entries.empty()) return FAILED(result) ? result : E_PENDING;
+    taskbar_xaml::ClearCache();
+    g_simple_value_cache.clear();g_reported_rules.clear();
+    g_live_variables = Json::object();
+    g_dynamic_queued = false;
     return result;
 }
 
@@ -1592,6 +2058,7 @@ MwStatus FinishCleanup() noexcept {
     }
     g_taskbar_window = nullptr;
     g_taskbar_thread = 0;
+    g_host_api = nullptr;
     SetLastError(S_OK);
     g_cleanup_pending.store(false, std::memory_order_release);
     return MW_OK;
@@ -1614,6 +2081,9 @@ MwStatus MW_CALL Start(const MwHostApi* host, const char* settings_json) {
     g_taskbar_window = taskbar;
     g_taskbar_thread = GetWindowThreadProcessId(taskbar, nullptr);
     g_ui_config = parsed.config;
+    g_host_api = host;
+    ++g_ui_profile_revision;
+    g_live_variables = g_ui_config.variables;
     {
         std::lock_guard lock(g_settings_mutex);
         g_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
@@ -1690,23 +2160,157 @@ MwStatus MW_CALL Stop() {
 } // namespace
 
 #ifdef MW_TASKBAR_CALLBACK_TESTING
+extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
+    const char* stage="initialization";
+    try {
+        winrt::init_apartment(winrt::apartment_type::single_threaded);
+        winrt::Windows::System::DispatcherQueueController queue{nullptr};
+        const DispatcherQueueOptions options{sizeof(DispatcherQueueOptions),DQTYPE_THREAD_CURRENT,DQTAT_COM_STA};
+        winrt::check_hresult(CreateDispatcherQueueController(options,reinterpret_cast<ABI::Windows::System::IDispatcherQueueController**>(winrt::put_abi(queue))));
+        auto manager=xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
+        {
+        controls::Grid grid;
+        stage="style application";
+        ElementEntry entry;entry.element=grid;entry.ui_element=grid;entry.type="Windows.UI.Xaml.Controls.Grid";
+        controls::ColumnDefinition original;
+        original.Width({47, xaml::GridUnitType::Pixel});
+        grid.ColumnDefinitions().Append(original);
+        std::vector<PropertyState> desired;
+        AddDesiredProperty(
+            entry, &desired, "Background",
+            Json{{"kind", "gradient"},
+                 {"stops", Json::array({Json{{"offset", 0}, {"color", "#11223380"}},
+                                        Json{{"offset", 1}, {"color", "#FFFFFFFF"}}})}});
+        AddDesiredProperty(entry, &desired, "Opacity", 0.8);
+        AddDesiredProperty(entry, &desired, "ColumnDefinitions",
+                           Json{{"kind", "columns"}, {"sizes", Json::array({"Auto", "2*", "64"})}});
+        for (auto &property : desired)
+            if (!ApplyProperty(entry, property))
+                winrt::throw_hresult(E_FAIL);
+        stage = "styled grid values";
+        if (grid.ColumnDefinitions().Size() != 3 ||
+            grid.ColumnDefinitions().GetAt(1).Width().Value != 2 ||
+            !grid.Background().try_as<media::LinearGradientBrush>() ||
+            std::abs(grid.Opacity() - 0.8) > 0.00001)
+            winrt::throw_hresult(E_FAIL);
+        stage = "original grid restoration";
+        if (FAILED(RestoreEntry(entry)) || grid.ColumnDefinitions().Size() != 1 ||
+            grid.ColumnDefinitions().GetAt(0) != original || grid.Background() ||
+            grid.Opacity() != 1 || HasTrackedState(entry))
+            winrt::throw_hresult(E_FAIL);
+        stage = "attached property";
+        const auto column = taskbar_xaml::Resolve(grid, "Grid.Column", 2);
+        grid.SetValue(column.property, column.value);
+        if (controls::Grid::GetColumn(grid) != 2)
+            return E_FAIL;
+        controls::TextBlock label;
+        stage = "typography";
+        const auto family = taskbar_xaml::Resolve(label, "FontFamily", "Segoe UI");
+        label.SetValue(family.property, family.value);
+        if (label.FontFamily().Source() != L"Segoe UI")
+            return E_FAIL;
+        const auto text = taskbar_xaml::Resolve(label, "Text", "#11223380");
+        label.SetValue(text.property, text.value);
+        if (label.Text() != L"#11223380")
+            return E_FAIL;
+        stage = "native 3D transforms";
+        const auto transform = taskbar_xaml::Resolve(
+            grid, "Transform3D",
+            Json{{"kind", "transform3d"}, {"rotationY", 12}, {"translateZ", 8}});
+        grid.SetValue(transform.property, transform.value);
+        if (grid.Transform3D().as<media::Media3D::CompositeTransform3D>().RotationY() != 12)
+            return E_FAIL;
+        const auto projection = taskbar_xaml::Resolve(
+            grid, "Projection", Json{{"kind", "projection"}, {"rotationY", 10}});
+        grid.SetValue(projection.property, projection.value);
+        if (grid.Projection().as<media::PlaneProjection>().RotationY() != 10)
+            return E_FAIL;
+        stage = "state and capture subscriptions";
+        grid.Name(L"captureGrid");
+        entry.handle = 1001;
+        entry.name = "captureGrid";
+        auto group =
+            xaml::Markup::XamlReader::Load(
+                L"<VisualStateGroup "
+                L"xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' "
+                L"xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' x:Name='CommonStates'/>")
+                .as<xaml::VisualStateGroup>();
+        xaml::VisualStateManager::GetVisualStateGroups(grid).Append(group);
+        g_ui_config = Config{};
+        g_ui_config.variables = Json{{"gap", 12}};
+        g_ui_config.captures = Json::array({Json{{"name", "taskbarWidth"},
+                                                 {"selector", Json{{"name", "captureGrid"}}},
+                                                 {"property", "ActualWidth"}}});
+        taskbar_config::Rule state_rule;
+        state_rule.selector.name = "captureGrid";
+        state_rule.state_group = "CommonStates";
+        state_rule.state = "PointerOver";
+        state_rule.properties = Json{{"Opacity", 0.5}};
+        g_ui_config.rules.push_back(state_rule);
+        ++g_ui_profile_revision;
+        g_entries.emplace(entry.handle, std::move(entry));
+        auto &tracked = g_entries.at(1001);
+        ConfigureRuleHandlers(tracked);
+        if (tracked.state_handlers.size() != 1 || tracked.capture_handlers.size() != 1 ||
+            !tracked.theme_handler)
+            return E_FAIL;
+        grid.Measure({320, 48});
+        grid.Arrange({0, 0, 320, 48});
+        ReadCaptures();
+        if (g_live_variables.at("taskbarWidth") != 320 ||
+            ExpandValue(tracked, Json{{"expression", "taskbarWidth - gap"}}) != 308)
+            return E_FAIL;
+        if (FAILED(RestoreEntry(tracked)) || HasTrackedState(tracked))
+            return E_FAIL;
+        g_entries.clear();
+        g_ui_config = Config{};
+        g_live_variables = Json::object();
+        stage = "custom blur graph";
+        taskbar_xaml::TestBlur(
+            xaml::Hosting::ElementCompositionPreview::GetElementVisual(grid).Compositor(),
+            Json{{"kind", "blur"},
+                 {"color", "#20202080"},
+                 {"radius", 8},
+                 {"saturation", 1.2},
+                 {"noiseOpacity", 0.02}});
+        taskbar_xaml::ClearCache();
+        g_simple_value_cache.clear();
+        }
+        manager.Close();
+        if (MwTaskbarConfiguratorEffectDiagnosticsBlock.live_brushes != 0 ||
+            MwTaskbarConfiguratorEffectDiagnosticsBlock.connected_brushes != 0 ||
+            MwTaskbarConfiguratorEffectDiagnosticsBlock.failures != 0) return E_FAIL;
+        return S_OK;
+    } catch (...) {
+        std::fprintf(stderr, "Rich XAML failure at %s\n", stage);
+        return winrt::to_hresult();
+    }
+}
 extern "C" HRESULT __stdcall MwTaskbarTestRotationAndAutoDimension() noexcept {
     try {
         struct Apartment {
-            Apartment() { winrt::init_apartment(winrt::apartment_type::single_threaded); }
-            ~Apartment() { winrt::clear_factory_cache(); winrt::uninit_apartment(); }
+            Apartment() {
+                winrt::init_apartment(winrt::apartment_type::single_threaded);
+            }
+            ~Apartment() {
+                winrt::clear_factory_cache();
+                winrt::uninit_apartment();
+            }
         } apartment;
         winrt::clear_factory_cache();
         winrt::Windows::System::DispatcherQueueController queue{nullptr};
-        const DispatcherQueueOptions options{sizeof(DispatcherQueueOptions),
-            DQTYPE_THREAD_CURRENT, DQTAT_COM_STA};
-        winrt::check_hresult(CreateDispatcherQueueController(options,
-            reinterpret_cast<ABI::Windows::System::IDispatcherQueueController**>(winrt::put_abi(queue))));
+        const DispatcherQueueOptions options{sizeof(DispatcherQueueOptions), DQTYPE_THREAD_CURRENT,
+                                             DQTAT_COM_STA};
+        winrt::check_hresult(CreateDispatcherQueueController(
+            options, reinterpret_cast<ABI::Windows::System::IDispatcherQueueController **>(
+                         winrt::put_abi(queue))));
         composition::Compositor compositor;
-        if (!compositor) return E_POINTER;
+        if (!compositor)
+            return E_POINTER;
         ElementEntry entry;
         entry.visual = compositor.CreateContainerVisual();
-        if (!entry.visual) return E_POINTER;
+        if (!entry.visual)
+            return E_POINTER;
         entry.has_visual = true;
         entry.visual.RotationAngle(0.5f);
         const auto visual = entry.visual;
@@ -1721,7 +2325,9 @@ extern "C" HRESULT __stdcall MwTaskbarTestRotationAndAutoDimension() noexcept {
             return E_FAIL;
         auto automatic = MakePropertyValue(nullptr, "width", Json("auto"));
         return std::isnan(winrt::unbox_value<double>(automatic)) ? S_OK : E_FAIL;
-    } catch (...) { return winrt::to_hresult(); }
+    } catch (...) {
+        return winrt::to_hresult();
+    }
 }
 
 struct DiagnosticCacheFixture : winrt::implements<DiagnosticCacheFixture,
