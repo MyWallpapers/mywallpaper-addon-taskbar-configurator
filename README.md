@@ -1,10 +1,14 @@
 # MyWallpaper Taskbar Configurator
 
-This native-only MyWallpaper add-on configures the existing Windows 11 taskbar from MyWallpaper's add-on settings sidebar. It has no separate window or web page. Its companion uses the pinned MyWallpaper native engine to load the add-on DLL into the matching Explorer process. Visual behavior and configuration remain in this repository; the engine ABI and implementation are unchanged by version 0.1.8.
+This native-only MyWallpaper add-on configures the existing Windows 11 taskbar from MyWallpaper's add-on settings sidebar. It has no separate window or web page. Its companion uses the pinned MyWallpaper native engine to load the add-on DLL into the matching Explorer process. Visual behavior and configuration remain in this repository; the engine ABI and implementation are unchanged through version 0.1.9.
 
 Engine ABI v1 permits one active instance per target. Activate this prototype in only one layer. Device profiles are isolated by account, published add-on or development source, and settings-schema version. Compatible instances of this same add-on share their values; distinct add-ons targeting Explorer retain independent profiles. Shared values do not merge native sessions or arbitrate competing property writes.
 
 ## Configuration without themes
+
+Version 0.1.9 adds element/state inspectors, sparse appearance overrides, native linear/radial gradients, transparent gradient overlays on backdrop glass, and autonomous scrolling or ping-pong gradient animations. The existing 49 setting IDs and device schema **2** are retained, with `appearanceJson`, `motionJson` and `showAdvancedControls` added alongside them. Missing overrides inherit the existing profile; upgrading does not replace a user's saved colors or layer geometry.
+
+The host supplies reusable schema-driven controls. In particular, `type: "array", format: "gradient-stops"` describes editable `{ offset, color }` values independently of this add-on; other Canvas, service or native add-ons can use the same editor. This manifest owns the Windows element names, materials, gradient geometry and animation parameters. The add-on owns rendering them through Windows Composition; MyWallpaper does not send animation frames from its sidebar.
 
 Version 0.1.8 retains the 49 setting IDs and device settings schema **2**, and removes its manifest presets. Existing saved values take precedence over the legacy palette selector. That selector, under Advanced, only fills omitted values in old partial configurations; it no longer locks the editable colors. This intentionally corrects older palette override behavior without discarding stored values. Advanced profile schemas 1 and 2 are both accepted.
 

@@ -19,6 +19,7 @@
 #include <winrt/Windows.Storage.Streams.h>
 #include <algorithm>
 #include <map>
+#include <cmath>
 
 extern "C" {
 __declspec(dllexport) taskbar_xaml::EffectDiagnostics MwTaskbarConfiguratorEffectDiagnosticsBlock{
@@ -59,7 +60,10 @@ struct Effect : winrt::implements<Effect, effects::IGraphicsEffect, effects::IGr
         return S_OK;
     }
     HRESULT __stdcall GetNamedPropertyMapping(
-        LPCWSTR, UINT *, interop::GRAPHICS_EFFECT_PROPERTY_MAPPING *) noexcept override {
+        LPCWSTR property, UINT *index, interop::GRAPHICS_EFFECT_PROPERTY_MAPPING *mapping) noexcept override {
+        if (!property || !index || !mapping) return E_POINTER;
+        if (wcscmp(property, L"BlurAmount") == 0) { *index = 0; *mapping = interop::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT; return S_OK; }
+        if (wcscmp(property, L"Color") == 0) { *index = 0; *mapping = interop::GRAPHICS_EFFECT_PROPERTY_MAPPING_COLOR_TO_VECTOR4; return S_OK; }
         return E_INVALIDARG;
     }
     HRESULT __stdcall GetPropertyCount(UINT *value) noexcept override {
@@ -111,16 +115,144 @@ winrt::Windows::UI::Color Color(std::string text) {
     };
     return {text.size() == 9 ? byte(7) : static_cast<uint8_t>(255), byte(1), byte(3), byte(5)};
 }
+struct GradientBrush : media::XamlCompositionBrushBaseT<GradientBrush> {
+    composition::Compositor compositor{nullptr};
+    composition::Visual host{nullptr};
+    Json settings;
+    composition::CompositionGradientBrush gradient{nullptr};
+    bool connected = false;
+    composition::CompositionBrush NativeBrush() { return CompositionBrush(); }
+    GradientBrush(composition::Visual visual, Json parameters)
+        : compositor(visual.Compositor()), host(visual), settings(std::move(parameters)) {
+        FallbackColor(Color(settings.at("stops").at(0).at("color").get<std::string>()));
+        InterlockedIncrement64(&MwTaskbarConfiguratorEffectDiagnosticsBlock.live_brushes);
+    }
+    ~GradientBrush() { OnDisconnected(); InterlockedDecrement64(&MwTaskbarConfiguratorEffectDiagnosticsBlock.live_brushes); }
+    void Expression(const wchar_t* property, const winrt::hstring& expression) {
+        try {
+            auto animation = compositor.CreateExpressionAnimation(expression);
+            animation.SetReferenceParameter(L"host", host);
+            gradient.StartAnimation(property, animation);
+        } catch (...) {
+#ifdef MW_TASKBAR_CALLBACK_TESTING
+            std::fwprintf(stderr, L"Gradient expression %s: %s\n", property, expression.c_str());
+#endif
+            throw;
+        }
+    }
+    void Update(Json parameters) {
+        const char* update_stage = "parameters";
+        try {
+        settings = std::move(parameters);
+        if (!gradient) return;
+        update_stage = "stops";
+        auto stops = settings.at("stops").get<std::vector<Json>>();
+        std::stable_sort(stops.begin(), stops.end(), [](const auto& a, const auto& b) { return a.at("offset").template get<double>() < b.at("offset").template get<double>(); });
+        while (gradient.ColorStops().Size() > stops.size()) {
+            auto stop = gradient.ColorStops().GetAt(gradient.ColorStops().Size() - 1); stop.StopAnimation(L"Color"); gradient.ColorStops().RemoveAtEnd(); stop.Close();
+        }
+        for (uint32_t i = 0; i < stops.size(); ++i) {
+            const auto& stop = stops[i];
+            if (i >= gradient.ColorStops().Size()) gradient.ColorStops().Append(compositor.CreateColorGradientStop());
+            auto native = gradient.ColorStops().GetAt(i);
+            native.Offset(static_cast<float>(stop.at("offset").get<double>()));
+            native.Color(Color(stop.at("color").get<std::string>()));
+        }
+        update_stage = "extend and offset";
+        const auto extend = settings.value("extend", "clamp");
+        gradient.ExtendMode(extend == "wrap" ? composition::CompositionGradientExtendMode::Wrap : extend == "mirror" ? composition::CompositionGradientExtendMode::Mirror : composition::CompositionGradientExtendMode::Clamp);
+        gradient.StopAnimation(L"Offset");
+        gradient.Offset({0, 0});
+        if (auto linear = gradient.try_as<composition::CompositionLinearGradientBrush>()) {
+            update_stage = "linear geometry";
+            if (settings.contains("angle")) {
+                // Absolute coordinates preserve the physical angle on a long,
+                // thin taskbar. Expressions follow size changes in Composition.
+                gradient.MappingMode(composition::CompositionMappingMode::Absolute);
+                const auto radians = settings.value("angle", 0.0) * 3.14159265358979323846 / 180.0;
+                const float c = static_cast<float>(std::cos(radians)), s = static_cast<float>(std::sin(radians));
+                const auto length = winrt::to_hstring("(" + std::to_string(std::abs(c)) + " * host.Size.X + " + std::to_string(std::abs(s)) + " * host.Size.Y) / " + std::to_string(settings.value("repetitions", 1.0)));
+                gradient.RotationAngleInDegrees(static_cast<float>(settings.value("angle", 0.0)));
+                Expression(L"CenterPoint", L"host.Size * 0.5");
+                Expression(L"StartPoint", L"host.Size * 0.5 - Vector2(" + length + L" * 0.5, 0)");
+                Expression(L"EndPoint", L"host.Size * 0.5 + Vector2(" + length + L" * 0.5, 0)");
+            } else {
+                gradient.StopAnimation(L"StartPoint"); gradient.StopAnimation(L"EndPoint"); gradient.StopAnimation(L"CenterPoint");
+                gradient.MappingMode(composition::CompositionMappingMode::Relative);
+                const auto start = settings.value("start", Json::array({0,0})), end = settings.value("end", Json::array({1,1}));
+                linear.StartPoint({start[0].get<float>(), start[1].get<float>()}); linear.EndPoint({end[0].get<float>(), end[1].get<float>()});
+            }
+        } else if (auto radial = gradient.try_as<composition::CompositionRadialGradientBrush>()) {
+            gradient.MappingMode(composition::CompositionMappingMode::Relative);
+            radial.EllipseCenter({static_cast<float>(settings.value("centerX", .5)), static_cast<float>(settings.value("centerY", .5))});
+            const auto repeats = static_cast<float>(settings.value("repetitions", 1.0));
+            radial.EllipseRadius({static_cast<float>(settings.value("radiusX", .5))/repeats, static_cast<float>(settings.value("radiusY", .5))/repeats});
+        }
+        update_stage = "motion";
+        const auto motion = settings.value("motion", "none");
+        if (motion != "none" && winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled() &&
+            winrt::Windows::System::Power::PowerManager::EnergySaverStatus() != winrt::Windows::System::Power::EnergySaverStatus::On) {
+            auto animation = compositor.CreateVector2KeyFrameAnimation();
+            const auto angle = settings.value("angle", 0.0) * 3.14159265358979323846 / 180.0;
+            // End expressions use live bounds. No timer, controller RPC or
+            // C++ callback executes on animation frames.
+            const auto vector = gradient.MappingMode() == composition::CompositionMappingMode::Absolute
+                ? winrt::to_hstring("Vector2(" + std::to_string(std::cos(angle) / settings.value("repetitions",1.0)) + "," + std::to_string(std::sin(angle) / settings.value("repetitions",1.0)) + ") * (" + std::to_string(std::abs(std::cos(angle))) + " * host.Size.X + " + std::to_string(std::abs(std::sin(angle))) + " * host.Size.Y)")
+                : winrt::hstring(L"Vector2(1,0)");
+            update_stage = "motion reference";
+            animation.SetReferenceParameter(L"host", host);
+            auto easing = compositor.CreateLinearEasingFunction();
+            update_stage = "motion initial key";
+            animation.InsertKeyFrame(0, {0,0}, easing);
+            update_stage = "motion expression key";
+            animation.InsertExpressionKeyFrame(motion == "pingpong" ? .5f : 1.f, vector, easing);
+            if (motion == "pingpong") animation.InsertKeyFrame(1, {0,0}, easing);
+            update_stage = "motion duration";
+            animation.Duration(std::chrono::duration_cast<foundation::TimeSpan>(std::chrono::duration<double>(settings.value("duration",12.0))));
+            animation.IterationBehavior(composition::AnimationIterationBehavior::Forever);
+            update_stage = "motion start";
+            gradient.StartAnimation(L"Offset", animation);
+        }
+        } catch (...) {
+#ifdef MW_TASKBAR_CALLBACK_TESTING
+            std::fprintf(stderr, "Gradient update failure at %s\n", update_stage);
+#else
+            (void)update_stage;
+#endif
+            throw;
+        }
+    }
+    void OnConnected() noexcept {
+        try {
+            if (gradient) return;
+            gradient = settings.value("shape", "linear") == "radial" ? compositor.CreateRadialGradientBrush().as<composition::CompositionGradientBrush>() : compositor.CreateLinearGradientBrush().as<composition::CompositionGradientBrush>();
+            Update(settings); CompositionBrush(gradient); connected = true;
+            InterlockedIncrement64(&MwTaskbarConfiguratorEffectDiagnosticsBlock.connected_brushes);
+        } catch (...) {
+            InterlockedIncrement64(&MwTaskbarConfiguratorEffectDiagnosticsBlock.failures);
+            InterlockedExchange64(&MwTaskbarConfiguratorEffectDiagnosticsBlock.last_error, winrt::to_hresult()); OnDisconnected();
+        }
+    }
+    void OnDisconnected() noexcept {
+        if (connected) { connected = false; InterlockedDecrement64(&MwTaskbarConfiguratorEffectDiagnosticsBlock.connected_brushes); }
+        try {
+            CompositionBrush(nullptr);
+            if (gradient) { for (auto stop : gradient.ColorStops()) stop.Close(); gradient.Close(); gradient = nullptr; }
+        } catch (...) { gradient = nullptr; }
+    }
+};
 struct BlurBrush : media::XamlCompositionBrushBaseT<BlurBrush> {
     composition::Compositor compositor{nullptr};
     Json settings;
+    composition::Visual host{nullptr};
+    winrt::com_ptr<GradientBrush> overlay;
     media::LoadedImageSurface noise{nullptr};
     bool connected = false;
     bool HasCompositionBrush() {
         return static_cast<bool>(CompositionBrush());
     }
-    BlurBrush(composition::Compositor value, Json parameters)
-        : compositor(value), settings(std::move(parameters)) {
+    BlurBrush(composition::Compositor value, Json parameters, composition::Visual visual = nullptr)
+        : compositor(value), settings(std::move(parameters)), host(visual) {
         FallbackColor(Color(settings.value("fallbackColor", "#202020FF")));
         InterlockedIncrement64(&MwTaskbarConfiguratorEffectDiagnosticsBlock.live_brushes);
     }
@@ -144,6 +276,7 @@ struct BlurBrush : media::XamlCompositionBrushBaseT<BlurBrush> {
                  foundation::PropertyValue::CreateUInt32(D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED),
                  foundation::PropertyValue::CreateUInt32(D2D1_BORDER_MODE_HARD)},
                 {source});
+            graph.as<effects::IGraphicsEffect>().Name(L"Blur");
             const float saturation = static_cast<float>(settings.value("saturation", 1.0));
             const float brightness = static_cast<float>(settings.value("luminosity", 1.0));
             const float r = (1 - saturation) * 0.2126f, g = (1 - saturation) * 0.7152f,
@@ -179,6 +312,7 @@ struct BlurBrush : media::XamlCompositionBrushBaseT<BlurBrush> {
             const float rgba[] = {tint.R / 255.0f, tint.G / 255.0f, tint.B / 255.0f, opacity};
             auto flood =
                 Node(CLSID_D2D1Flood, {foundation::PropertyValue::CreateSingleArray(rgba)}, {});
+            flood.as<effects::IGraphicsEffect>().Name(L"Tint");
             graph = Node(CLSID_D2D1Composite,
                          {foundation::PropertyValue::CreateUInt32(D2D1_COMPOSITE_MODE_SOURCE_OVER)},
                          {graph, flood});
@@ -202,7 +336,9 @@ struct BlurBrush : media::XamlCompositionBrushBaseT<BlurBrush> {
                          {foundation::PropertyValue::CreateUInt32(D2D1_COMPOSITE_MODE_SOURCE_OVER)},
                          {graph, repeated});
             }
-            auto factory = compositor.CreateEffectFactory(graph.as<effects::IGraphicsEffect>());
+            if (settings.contains("overlay") && host)
+                graph = Node(CLSID_D2D1Composite, {foundation::PropertyValue::CreateUInt32(D2D1_COMPOSITE_MODE_SOURCE_OVER)}, {graph, composition::CompositionEffectSourceParameter(L"overlay")});
+            auto factory = compositor.CreateEffectFactory(graph.as<effects::IGraphicsEffect>(), {L"Blur.BlurAmount", L"Tint.Color"});
             auto brush = factory.CreateBrush();
             brush.SetSourceParameter(L"backdrop", compositor.CreateBackdropBrush());
             if (grain > 0) {
@@ -250,6 +386,11 @@ struct BlurBrush : media::XamlCompositionBrushBaseT<BlurBrush> {
                 surface.Stretch(composition::CompositionStretch::None);
                 brush.SetSourceParameter(L"noise", surface);
             }
+            if (settings.contains("overlay") && host) {
+                overlay = winrt::make_self<GradientBrush>(host, settings.at("overlay")); overlay->OnConnected();
+                if (!overlay->NativeBrush()) winrt::throw_hresult(E_FAIL);
+                brush.SetSourceParameter(L"overlay", overlay->NativeBrush());
+            }
             CompositionBrush(brush);
             connected = true;
             InterlockedIncrement64(&MwTaskbarConfiguratorEffectDiagnosticsBlock.connected_brushes);
@@ -276,6 +417,7 @@ struct BlurBrush : media::XamlCompositionBrushBaseT<BlurBrush> {
             }
         } catch (...) {
         }
+        if (overlay) { overlay->OnDisconnected(); overlay = nullptr; }
         try {
             if (noise) {
                 noise.Close();
@@ -283,6 +425,16 @@ struct BlurBrush : media::XamlCompositionBrushBaseT<BlurBrush> {
             }
         } catch (...) {
             noise = nullptr;
+        }
+    }
+    void Update(Json parameters) {
+        settings = std::move(parameters);
+        FallbackColor(Color(settings.value("fallbackColor", "#202020FF")));
+        if (auto brush = CompositionBrush().try_as<composition::CompositionEffectBrush>()) {
+            brush.Properties().InsertScalar(L"Blur.BlurAmount", static_cast<float>(settings.value("radius",18.0)));
+            auto tint = Color(settings.value("color", "#20202080")); tint.A = static_cast<uint8_t>(std::round(settings.value("tintOpacity", tint.A/255.0) * 255));
+            brush.Properties().InsertColor(L"Tint.Color", tint);
+            if (overlay) overlay->Update(settings.at("overlay"));
         }
     }
 };
@@ -312,7 +464,53 @@ std::wstring Document(std::string_view type, const std::string &property, const 
 void ClearCache() {
     cache.clear();
 }
+bool TryUpdateBrush(const foundation::IInspectable& value, const Json& previous, const Json& next) {
+    if (!previous.is_object() || !next.is_object() || previous.value("kind", "") != next.value("kind", "")) return false;
+    auto brush = value.try_as<media::XamlCompositionBrushBase>(); if (!brush) return false;
+    if (next.value("kind", "") == "gradient" && previous.value("shape", "linear") == next.value("shape", "linear")) {
+        winrt::get_self<GradientBrush>(brush.as<media::IXamlCompositionBrushBaseOverrides>())->Update(next); return true;
+    }
+    if (next.value("kind", "") == "blur") {
+        auto a = previous, b = next;
+        for (const auto key : {"color", "radius", "tintOpacity", "fallbackColor"}) { a.erase(key); b.erase(key); }
+        if (a.contains("overlay") && b.contains("overlay") && a["overlay"].value("shape", "linear") == b["overlay"].value("shape", "linear")) { a.erase("overlay"); b.erase("overlay"); }
+        if (a == b) { winrt::get_self<BlurBrush>(brush.as<media::IXamlCompositionBrushBaseOverrides>())->Update(next); return true; }
+    }
+    return false;
+}
 #ifdef MW_TASKBAR_CALLBACK_TESTING
+void TestMaterialUpdates(composition::Visual const& host) {
+    const auto initial_live = MwTaskbarConfiguratorEffectDiagnosticsBlock.live_brushes;
+    const auto initial_connected = MwTaskbarConfiguratorEffectDiagnosticsBlock.connected_brushes;
+    const auto initial_failures = MwTaskbarConfiguratorEffectDiagnosticsBlock.failures;
+    Json settings{{"kind", "gradient"}, {"shape", "linear"}, {"angle", 45}, {"repetitions", 3}, {"extend", "wrap"}, {"motion", "scroll"}, {"duration", 3},
+        {"stops", Json::array({Json{{"offset",1},{"color","#FF4499FF"}}, Json{{"offset",0},{"color","#11CCEEFF"}}})}};
+    {
+        auto gradient = winrt::make_self<GradientBrush>(host, settings); gradient->OnConnected();
+        const auto native = gradient->NativeBrush(); if (!native) winrt::throw_hresult(static_cast<HRESULT>(MwTaskbarConfiguratorEffectDiagnosticsBlock.last_error));
+        auto previous = settings;
+        for (int i = 0; i < 200; ++i) {
+            auto next = previous; next["angle"] = i % 180; next["stops"][0]["offset"] = (i%100) / 100.0;
+            if (!TryUpdateBrush(gradient.as<foundation::IInspectable>(), previous, next) || gradient->NativeBrush() != native) winrt::throw_hresult(E_FAIL);
+            previous = std::move(next);
+        }
+        gradient->OnDisconnected(); if (gradient->NativeBrush()) winrt::throw_hresult(E_FAIL);
+    }
+    settings["shape"] = "radial"; settings["motion"] = "pingpong";
+    {
+        auto radial = winrt::make_self<GradientBrush>(host, settings); radial->OnConnected(); if (!radial->NativeBrush()) winrt::throw_hresult(E_FAIL); radial->OnDisconnected();
+    }
+    {
+        Json material{{"kind","blur"},{"color","#202020FF"},{"radius",18},{"tintOpacity",.2},{"noiseOpacity",.02},{"overlay",settings}};
+        auto blur = winrt::make_self<BlurBrush>(host.Compositor(), material, host); blur->OnConnected();
+        for (int i=0; i<100; ++i) {
+            auto next=material; next["radius"]=i; next["tintOpacity"]=(i%100)/100.0; next["overlay"]["stops"][0]["color"]="#55FF99AA";
+            if (!TryUpdateBrush(blur.as<foundation::IInspectable>(),material,next)) winrt::throw_hresult(E_FAIL); material=std::move(next);
+        }
+        blur->OnDisconnected(); if (blur->HasCompositionBrush()) winrt::throw_hresult(E_FAIL);
+    }
+    if (initial_live != MwTaskbarConfiguratorEffectDiagnosticsBlock.live_brushes || initial_connected != MwTaskbarConfiguratorEffectDiagnosticsBlock.connected_brushes || initial_failures != MwTaskbarConfiguratorEffectDiagnosticsBlock.failures) winrt::throw_hresult(E_FAIL);
+}
 void TestBlur(composition::Compositor const &compositor, Json const &settings) {
     auto brush = winrt::make_self<BlurBrush>(compositor, settings);
     brush->OnConnected();
@@ -339,7 +537,8 @@ Value Resolve(const xaml::FrameworkElement &element, std::string_view name, cons
         else if (known_property == xaml::Controls::Border::BorderThicknessProperty())
             property = "BorderThickness";
     }
-    const bool custom = value.is_object() && value.value("kind", "") == "blur";
+    const bool custom = value.is_object() && (value.value("kind", "") == "blur" ||
+        (value.value("kind", "") == "gradient" && (value.contains("shape") || value.contains("angle") || value.contains("extend") || value.contains("motion"))));
     const auto compositor =
         custom ? xaml::Hosting::ElementCompositionPreview::GetElementVisual(element).Compositor()
                : composition::Compositor(nullptr);
@@ -347,7 +546,7 @@ Value Resolve(const xaml::FrameworkElement &element, std::string_view name, cons
         type + ":" + property + ":" + value.dump() +
         (custom ? ":" + std::to_string(reinterpret_cast<uintptr_t>(winrt::get_abi(compositor)))
                 : "")));
-    if (auto found = cache.find(key); found != cache.end())
+    if (auto found = cache.find(key); !custom && found != cache.end())
         return found->second;
     Value result;
     std::vector<std::string> candidates{type};
@@ -381,11 +580,13 @@ Value Resolve(const xaml::FrameworkElement &element, std::string_view name, cons
                 winrt::throw_hresult(E_INVALIDARG);
             if (value.is_null())
                 result.value = xaml::DependencyProperty::UnsetValue();
-            if (custom)
-                result.value = winrt::make<BlurBrush>(compositor, value);
+            if (custom) {
+                auto host = xaml::Hosting::ElementCompositionPreview::GetElementVisual(element);
+                result.value = value.value("kind", "") == "gradient" ? winrt::make<GradientBrush>(host, value).as<foundation::IInspectable>() : winrt::make<BlurBrush>(compositor, value, host).as<foundation::IInspectable>();
+            }
             if (cache.size() >= 1024)
                 cache.clear();
-            cache.emplace(key, result);
+            if (!custom) cache.emplace(key, result);
             return result;
         } catch (...) {
             last = winrt::to_hresult();

@@ -33,6 +33,7 @@ struct Selector {
     uint32_t index = 0;
     bool root = false;
     bool exact_type = false;
+    bool operator==(const Selector&) const = default;
 };
 
 struct Animation {
@@ -44,6 +45,7 @@ struct Animation {
     uint32_t hover_duration_ms = 180;
     uint32_t press_duration_ms = 90;
     Easing easing = Easing::ease_out;
+    bool operator==(const Animation&) const = default;
 };
 
 struct Rule {
@@ -52,6 +54,7 @@ struct Rule {
     std::string state_group;
     std::string state;
     bool enabled = true;
+    bool operator==(const Rule&) const = default;
 };
 
 struct Config {
@@ -113,6 +116,11 @@ struct Config {
     nlohmann::json resources = nlohmann::json::object();
     std::vector<Rule> rules;
     std::vector<Animation> animations;
+    // Consumer overrides are sparse: absent fields inherit the published flat
+    // settings and expert rules. No second device profile or engine API.
+    nlohmann::json appearance = nlohmann::json::object();
+    nlohmann::json motion = nlohmann::json::object();
+    bool operator==(const Config&) const = default;
 };
 
 struct ParseResult {
