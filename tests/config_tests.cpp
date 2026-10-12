@@ -167,12 +167,46 @@ void TestGeometryAndManifest(const char* manifest_path) {
             "a color edit after a preset remains effective");
     }
 }
+void TestConsumerAppearance() {
+    Json gradient{{"kind","gradient"},{"shape","linear"},{"angle",45},{"extend","wrap"},{"repetitions",3},{"motion","scroll"},{"duration",12},
+        {"stops",Json::array({Json{{"offset",.375},{"color","#FF4499AA"}},Json{{"offset",1},{"color","#4488FFFF"}}})}};
+    auto settings = FullDefaults();
+    Json appearance{{"surface",Json{{"normal",Json{{"background",gradient}}}}},{"button",Json{{"hover",Json{{"opacity",.6}}}}}};
+    settings["appearanceJson"] = appearance.dump();
+    auto parsed = ParseSettingsJson(settings);
+    Check(static_cast<bool>(parsed) && parsed.config.appearance == appearance, "sparse consumer regions and states parse without duplicating inherited fields");
+    Check(parsed.config.surface_color == "#1B2330FF" && parsed.config.button_hover_scale == 1.06, "consumer editing preserves legacy user values");
+    for (const auto& field : {"angle","repetitions","duration","radiusX"}) {
+        auto invalid = gradient; invalid[field] = -500; Check(!taskbar_config::ValidPropertyValue("Fill",invalid),"native gradient parameters are bounded");
+    }
+    Json glass{{"kind","blur"},{"color","#20202080"},{"overlay",gradient}};
+    Check(taskbar_config::ValidPropertyValue("Background",glass),"glass and gradient compose as one material");
+    glass["overlay"]["motion"]="unknown"; Check(!taskbar_config::ValidPropertyValue("Background",glass),"invalid nested material motion is rejected");
+    for (const auto& invalid : {Json{{"surface",Json{{"hover",Json::object()}}}},Json{{"unknown",Json::object()}},Json{{"button",Json{{"normal",Json{{"opacity",2}}}}}}}) {
+        settings["appearanceJson"]=invalid.dump(); Check(!ParseSettingsJson(settings),"unsupported consumer target/state/value is rejected");
+    }
+    settings["appearanceJson"]=""; Check(ParseSettingsJson(settings).config.appearance.empty(),"empty consumer configuration preserves the existing appearance");
+}
+void TestConsumerMotion() {
+    auto settings = FullDefaults();
+    const Json motion{{"button",Json{{"hoverSize",1.15},{"pressDurationMs",80},{"easing","ease-in-out"}}}};
+    settings["motionJson"]=motion.dump(); auto parsed=ParseSettingsJson(settings);
+    Check(static_cast<bool>(parsed) && parsed.config.motion==motion,"consumer motion is sparse and uses native ratios internally");
+    Check(parsed.config.button_hover_scale==1.06,"consumer motion preserves historical persisted values");
+    for(const auto& invalid: {Json{{"button",Json{{"hoverSize",9}}}},Json{{"button",Json{{"pressDurationMs",.5}}}},Json{{"surface",Json::object()}}}){
+        settings["motionJson"]=invalid.dump(); Check(!ParseSettingsJson(settings),"invalid motion is rejected before Explorer receives it");
+    }
+    auto settings_active=FullDefaults();settings_active["appearanceJson"]=R"({"indicator":{"active":{"background":{"kind":"solid","color":"#FF4488FF"}}}})";
+    auto active=ParseSettingsJson(settings_active);Check(static_cast<bool>(active) && active.config.rules.size()==1 && active.config.rules[0].state_group=="RunningIndicatorStates","consumer active state reuses native state subscriptions");
+}
 } // namespace
 
 int main(int argc, char** argv) {
     TestDefaultsAndPresets();
     TestValidation();
     TestStructuredProfiles();
+    TestConsumerAppearance();
+    TestConsumerMotion();
     if (argc > 1) TestGeometryAndManifest(argv[1]);
     if (failures) return EXIT_FAILURE;
     std::cout << "Configuration contract tests passed.\n";

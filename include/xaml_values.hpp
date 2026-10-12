@@ -21,9 +21,12 @@ Value Resolve(const winrt::Windows::UI::Xaml::FrameworkElement &element, std::st
               const nlohmann::json &value,
               const winrt::Windows::UI::Xaml::DependencyProperty &known_property = nullptr);
 void ClearCache();
+bool TryUpdateBrush(const winrt::Windows::Foundation::IInspectable& brush,
+                    const nlohmann::json& previous, const nlohmann::json& next);
 #ifdef MW_TASKBAR_CALLBACK_TESTING
 void TestBlur(winrt::Windows::UI::Composition::Compositor const &compositor,
               nlohmann::json const &settings);
+void TestMaterialUpdates(winrt::Windows::UI::Composition::Visual const& host);
 #endif
 } // namespace taskbar_xaml
 extern "C" __declspec(dllexport) taskbar_xaml::EffectDiagnostics

@@ -2,7 +2,7 @@
   "runtime": "native-v1",
   "name": "Taskbar Configurator",
   "description": "Compose native Windows taskbar styles, materials, visual states, layout and animations directly in MyWallpaper.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "deviceSettingsVersion": "2",
   "settings": [
     {
@@ -11,6 +11,1982 @@
       "label": "Enable taskbar styling",
       "description": "Turn this add-on's visual overrides on or off.",
       "default": true,
+      "scope": "device"
+    },
+    {
+      "id": "appearanceJson",
+      "type": "textarea",
+      "label": "Personnaliser un élément",
+      "description": "Choisissez l’élément et son état. Les modifications sont appliquées ensemble ; vos anciens réglages sont conservés.",
+      "default": "",
+      "scope": "device",
+      "editor": {
+        "format": "json",
+        "blankIsDefault": true,
+        "schema": {
+          "type": "object",
+          "title": "Élément",
+          "presentation": "inspector",
+          "default": {},
+          "properties": {
+            "surface": {
+              "type": "object",
+              "title": "Barre",
+              "description": "Les effets sont appliqués à cet élément natif. Les dimensions et animations sont disponibles dans les sections ci-dessous.",
+              "presentation": "inspector",
+              "properties": {
+                "normal": {
+                  "$ref": "#/$defs/surfaceStyle",
+                  "title": "Normal",
+                  "description": "Les valeurs existantes restent actives. Modifiez seulement ce que vous souhaitez remplacer."
+                }
+              },
+              "additionalProperties": false,
+              "default": {},
+              "selectorLabel": "État"
+            },
+            "button": {
+              "type": "object",
+              "title": "Applications",
+              "description": "Les effets sont appliqués à cet élément natif. Les dimensions et animations sont disponibles dans les sections ci-dessous.",
+              "presentation": "inspector",
+              "properties": {
+                "normal": {
+                  "$ref": "#/$defs/buttonStyle",
+                  "title": "Normal",
+                  "description": "Les valeurs existantes restent actives. Modifiez seulement ce que vous souhaitez remplacer."
+                },
+                "hover": {
+                  "$ref": "#/$defs/buttonStyle",
+                  "title": "Survol",
+                  "description": "Hérite de Normal ; seuls les réglages modifiés ici le remplacent.",
+                  "inheritPropertiesFrom": [
+                    "button.normal"
+                  ]
+                },
+                "pressed": {
+                  "$ref": "#/$defs/buttonStyle",
+                  "title": "Clic maintenu",
+                  "description": "Hérite de Normal et Survol. Réinitialisez un réglage pour retrouver cet héritage.",
+                  "inheritPropertiesFrom": [
+                    "button.hover",
+                    "button.normal"
+                  ]
+                },
+                "active": {
+                  "$ref": "#/$defs/buttonStyle",
+                  "title": "Application active",
+                  "description": "Apparence de l’application au premier plan, lorsque Windows expose cet état.",
+                  "inheritPropertiesFrom": [
+                    "button.normal"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "default": {},
+              "selectorLabel": "État"
+            },
+            "startButton": {
+              "type": "object",
+              "title": "Démarrer",
+              "description": "Les effets sont appliqués à cet élément natif. Les dimensions et animations sont disponibles dans les sections ci-dessous.",
+              "presentation": "inspector",
+              "properties": {
+                "normal": {
+                  "$ref": "#/$defs/startButtonStyle",
+                  "title": "Normal",
+                  "description": "Les valeurs existantes restent actives. Modifiez seulement ce que vous souhaitez remplacer."
+                },
+                "hover": {
+                  "$ref": "#/$defs/startButtonStyle",
+                  "title": "Survol",
+                  "description": "Hérite de Normal ; seuls les réglages modifiés ici le remplacent.",
+                  "inheritPropertiesFrom": [
+                    "startButton.normal"
+                  ]
+                },
+                "pressed": {
+                  "$ref": "#/$defs/startButtonStyle",
+                  "title": "Clic maintenu",
+                  "description": "Hérite de Normal et Survol. Réinitialisez un réglage pour retrouver cet héritage.",
+                  "inheritPropertiesFrom": [
+                    "startButton.hover",
+                    "startButton.normal"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "default": {},
+              "selectorLabel": "État"
+            },
+            "systemTray": {
+              "type": "object",
+              "title": "Zone système",
+              "description": "Les effets sont appliqués à cet élément natif. Les dimensions et animations sont disponibles dans les sections ci-dessous.",
+              "presentation": "inspector",
+              "properties": {
+                "normal": {
+                  "$ref": "#/$defs/systemTrayStyle",
+                  "title": "Normal",
+                  "description": "Les valeurs existantes restent actives. Modifiez seulement ce que vous souhaitez remplacer."
+                },
+                "hover": {
+                  "$ref": "#/$defs/systemTrayStyle",
+                  "title": "Survol",
+                  "description": "Hérite de Normal ; seuls les réglages modifiés ici le remplacent.",
+                  "inheritPropertiesFrom": [
+                    "systemTray.normal"
+                  ]
+                },
+                "pressed": {
+                  "$ref": "#/$defs/systemTrayStyle",
+                  "title": "Clic maintenu",
+                  "description": "Hérite de Normal et Survol. Réinitialisez un réglage pour retrouver cet héritage.",
+                  "inheritPropertiesFrom": [
+                    "systemTray.hover",
+                    "systemTray.normal"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "default": {},
+              "selectorLabel": "État"
+            },
+            "indicator": {
+              "type": "object",
+              "title": "Indicateurs",
+              "description": "Les effets sont appliqués à cet élément natif. Les dimensions et animations sont disponibles dans les sections ci-dessous.",
+              "presentation": "inspector",
+              "properties": {
+                "normal": {
+                  "$ref": "#/$defs/indicatorStyle",
+                  "title": "Normal",
+                  "description": "Les valeurs existantes restent actives. Modifiez seulement ce que vous souhaitez remplacer."
+                },
+                "active": {
+                  "$ref": "#/$defs/indicatorStyle",
+                  "title": "Application active",
+                  "description": "Apparence de l’application au premier plan, lorsque Windows expose cet état.",
+                  "inheritPropertiesFrom": [
+                    "indicator.normal"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "default": {},
+              "selectorLabel": "État"
+            }
+          },
+          "additionalProperties": false,
+          "rawEditor": false,
+          "$defs": {
+            "gradient": {
+              "type": "object",
+              "title": "Dégradé linéaire",
+              "properties": {
+                "kind": {
+                  "const": "gradient"
+                },
+                "stops": {
+                  "type": "array",
+                  "title": "Couleurs et positions",
+                  "format": "gradient-stops",
+                  "minItems": 2,
+                  "maxItems": 64,
+                  "default": [
+                    {
+                      "offset": 0,
+                      "color": "#FF4FA0FF"
+                    },
+                    {
+                      "offset": 1,
+                      "color": "#865FFFFF"
+                    }
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "offset": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "color": {
+                        "type": "string",
+                        "format": "color"
+                      }
+                    },
+                    "required": [
+                      "offset",
+                      "color"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "shape": {
+                  "const": "linear"
+                },
+                "angle": {
+                  "type": "number",
+                  "title": "Direction",
+                  "minimum": -180,
+                  "maximum": 180,
+                  "default": 0,
+                  "presentation": "slider",
+                  "unit": "°",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "repetitions": {
+                  "type": "number",
+                  "title": "Nombre de répétitions",
+                  "minimum": 1,
+                  "maximum": 16,
+                  "default": 1,
+                  "presentation": "slider",
+                  "unit": "",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "extend": {
+                  "type": "string",
+                  "title": "Au-delà du dégradé",
+                  "enum": [
+                    "clamp",
+                    "wrap",
+                    "mirror"
+                  ],
+                  "enumNames": [
+                    "Prolonger les couleurs",
+                    "Répéter",
+                    "Refléter"
+                  ],
+                  "default": "clamp"
+                },
+                "motion": {
+                  "type": "string",
+                  "title": "Mouvement",
+                  "enum": [
+                    "none",
+                    "scroll",
+                    "pingpong"
+                  ],
+                  "enumNames": [
+                    "Fixe",
+                    "Défilement",
+                    "Aller-retour"
+                  ],
+                  "default": "none"
+                },
+                "duration": {
+                  "type": "number",
+                  "title": "Durée du cycle",
+                  "minimum": 1,
+                  "maximum": 120,
+                  "default": 12,
+                  "presentation": "slider",
+                  "unit": "s",
+                  "displayScale": 1,
+                  "displayOffset": 0,
+                  "showIf": {
+                    "property": "motion",
+                    "oneOf": [
+                      "scroll",
+                      "pingpong"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "kind",
+                "stops",
+                "shape",
+                "angle",
+                "extend",
+                "repetitions",
+                "motion",
+                "duration"
+              ],
+              "additionalProperties": false
+            },
+            "glassGradient": {
+              "title": "Dégradé sur le verre",
+              "description": "Utilisez des couleurs transparentes pour garder le flou visible.",
+              "oneOf": [
+                {
+                  "type": "object",
+                  "title": "Dégradé linéaire",
+                  "properties": {
+                    "kind": {
+                      "const": "gradient"
+                    },
+                    "stops": {
+                      "type": "array",
+                      "title": "Couleurs et positions",
+                      "format": "gradient-stops",
+                      "minItems": 2,
+                      "maxItems": 64,
+                      "default": [
+                        {
+                          "offset": 0,
+                          "color": "#FF449944"
+                        },
+                        {
+                          "offset": 1,
+                          "color": "#4488FF44"
+                        }
+                      ],
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "offset": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          "color": {
+                            "type": "string",
+                            "format": "color"
+                          }
+                        },
+                        "required": [
+                          "offset",
+                          "color"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "shape": {
+                      "const": "linear"
+                    },
+                    "angle": {
+                      "type": "number",
+                      "title": "Direction",
+                      "minimum": -180,
+                      "maximum": 180,
+                      "default": 0,
+                      "presentation": "slider",
+                      "unit": "°",
+                      "displayScale": 1,
+                      "displayOffset": 0
+                    },
+                    "repetitions": {
+                      "type": "number",
+                      "title": "Nombre de répétitions",
+                      "minimum": 1,
+                      "maximum": 16,
+                      "default": 1,
+                      "presentation": "slider",
+                      "unit": "",
+                      "displayScale": 1,
+                      "displayOffset": 0
+                    },
+                    "extend": {
+                      "type": "string",
+                      "title": "Au-delà du dégradé",
+                      "enum": [
+                        "clamp",
+                        "wrap",
+                        "mirror"
+                      ],
+                      "enumNames": [
+                        "Prolonger les couleurs",
+                        "Répéter",
+                        "Refléter"
+                      ],
+                      "default": "clamp"
+                    },
+                    "motion": {
+                      "type": "string",
+                      "title": "Mouvement",
+                      "enum": [
+                        "none",
+                        "scroll",
+                        "pingpong"
+                      ],
+                      "enumNames": [
+                        "Fixe",
+                        "Défilement",
+                        "Aller-retour"
+                      ],
+                      "default": "none"
+                    },
+                    "duration": {
+                      "type": "number",
+                      "title": "Durée du cycle",
+                      "minimum": 1,
+                      "maximum": 120,
+                      "default": 12,
+                      "presentation": "slider",
+                      "unit": "s",
+                      "displayScale": 1,
+                      "displayOffset": 0,
+                      "showIf": {
+                        "property": "motion",
+                        "oneOf": [
+                          "scroll",
+                          "pingpong"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "stops",
+                    "shape",
+                    "angle",
+                    "extend",
+                    "repetitions",
+                    "motion",
+                    "duration"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "title": "Dégradé radial",
+                  "properties": {
+                    "kind": {
+                      "const": "gradient"
+                    },
+                    "stops": {
+                      "type": "array",
+                      "title": "Couleurs et positions",
+                      "format": "gradient-stops",
+                      "minItems": 2,
+                      "maxItems": 64,
+                      "default": [
+                        {
+                          "offset": 0,
+                          "color": "#FF449944"
+                        },
+                        {
+                          "offset": 1,
+                          "color": "#4488FF44"
+                        }
+                      ],
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "offset": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          "color": {
+                            "type": "string",
+                            "format": "color"
+                          }
+                        },
+                        "required": [
+                          "offset",
+                          "color"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "shape": {
+                      "const": "radial"
+                    },
+                    "repetitions": {
+                      "type": "number",
+                      "title": "Nombre de répétitions",
+                      "minimum": 1,
+                      "maximum": 16,
+                      "default": 1,
+                      "presentation": "slider",
+                      "unit": "",
+                      "displayScale": 1,
+                      "displayOffset": 0
+                    },
+                    "extend": {
+                      "type": "string",
+                      "title": "Au-delà du dégradé",
+                      "enum": [
+                        "clamp",
+                        "wrap",
+                        "mirror"
+                      ],
+                      "enumNames": [
+                        "Prolonger les couleurs",
+                        "Répéter",
+                        "Refléter"
+                      ],
+                      "default": "clamp"
+                    },
+                    "centerX": {
+                      "type": "number",
+                      "title": "Centre horizontal",
+                      "minimum": 0,
+                      "maximum": 1,
+                      "default": 0.5,
+                      "presentation": "slider",
+                      "unit": "%",
+                      "displayScale": 100,
+                      "displayOffset": 0
+                    },
+                    "centerY": {
+                      "type": "number",
+                      "title": "Centre vertical",
+                      "minimum": 0,
+                      "maximum": 1,
+                      "default": 0.5,
+                      "presentation": "slider",
+                      "unit": "%",
+                      "displayScale": 100,
+                      "displayOffset": 0
+                    },
+                    "radiusX": {
+                      "type": "number",
+                      "title": "Rayon horizontal",
+                      "minimum": 0.01,
+                      "maximum": 2,
+                      "default": 0.5,
+                      "presentation": "slider",
+                      "unit": "%",
+                      "displayScale": 100,
+                      "displayOffset": 0
+                    },
+                    "radiusY": {
+                      "type": "number",
+                      "title": "Rayon vertical",
+                      "minimum": 0.01,
+                      "maximum": 2,
+                      "default": 0.5,
+                      "presentation": "slider",
+                      "unit": "%",
+                      "displayScale": 100,
+                      "displayOffset": 0
+                    },
+                    "motion": {
+                      "type": "string",
+                      "title": "Mouvement",
+                      "enum": [
+                        "none",
+                        "scroll",
+                        "pingpong"
+                      ],
+                      "enumNames": [
+                        "Fixe",
+                        "Défilement",
+                        "Aller-retour"
+                      ],
+                      "default": "none"
+                    },
+                    "duration": {
+                      "type": "number",
+                      "title": "Durée du cycle",
+                      "minimum": 1,
+                      "maximum": 120,
+                      "default": 12,
+                      "presentation": "slider",
+                      "unit": "s",
+                      "displayScale": 1,
+                      "displayOffset": 0,
+                      "showIf": {
+                        "property": "motion",
+                        "oneOf": [
+                          "scroll",
+                          "pingpong"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "stops",
+                    "shape",
+                    "extend",
+                    "repetitions",
+                    "motion",
+                    "duration",
+                    "centerX",
+                    "centerY",
+                    "radiusX",
+                    "radiusY"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "surfaceStyle": {
+              "type": "object",
+              "presentation": "overrides",
+              "properties": {
+                "background": {
+                  "title": "Fond",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "title": "Couleur unie",
+                      "properties": {
+                        "kind": {
+                          "const": "solid"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur",
+                          "default": "#1B2330FF",
+                          "defaultFromSetting": "surfaceColor"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/$defs/gradient"
+                    },
+                    {
+                      "$ref": "#/$defs/radialGradient"
+                    },
+                    {
+                      "type": "object",
+                      "title": "Verre dépoli",
+                      "properties": {
+                        "kind": {
+                          "const": "blur"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Teinte",
+                          "default": "#1B2330FF",
+                          "defaultFromSetting": "surfaceColor"
+                        },
+                        "radius": {
+                          "type": "number",
+                          "title": "Flou",
+                          "minimum": 0,
+                          "maximum": 100,
+                          "default": 18,
+                          "presentation": "slider",
+                          "unit": "px",
+                          "displayScale": 1,
+                          "displayOffset": 0
+                        },
+                        "tintOpacity": {
+                          "type": "number",
+                          "title": "Intensité de la teinte",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0.25,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "saturation": {
+                          "type": "number",
+                          "title": "Saturation",
+                          "minimum": 0,
+                          "maximum": 4,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "luminosity": {
+                          "type": "number",
+                          "title": "Luminosité",
+                          "minimum": 0,
+                          "maximum": 2,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "noiseOpacity": {
+                          "type": "number",
+                          "title": "Grain",
+                          "minimum": 0,
+                          "maximum": 0.25,
+                          "default": 0.015,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "fallbackColor": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur de repli",
+                          "default": "#1B2330FF",
+                          "defaultFromSetting": "surfaceColor"
+                        },
+                        "overlay": {
+                          "$ref": "#/$defs/glassGradient"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color",
+                        "radius",
+                        "tintOpacity",
+                        "saturation",
+                        "luminosity",
+                        "noiseOpacity",
+                        "fallbackColor"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "opacity": {
+                  "type": "number",
+                  "title": "Opacité",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.94,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0,
+                  "defaultFromSetting": "surfaceOpacity"
+                },
+                "cornerRadius": {
+                  "type": "number",
+                  "title": "Arrondi",
+                  "minimum": 0,
+                  "maximum": 64,
+                  "default": 14,
+                  "presentation": "slider",
+                  "unit": "px",
+                  "displayScale": 1,
+                  "displayOffset": 0,
+                  "defaultFromSetting": "surfaceRadius"
+                },
+                "borderBrush": {
+                  "type": "string",
+                  "format": "color",
+                  "title": "Contour",
+                  "default": "#FFFFFF00"
+                },
+                "borderThickness": {
+                  "type": "number",
+                  "title": "Épaisseur du contour",
+                  "minimum": 0,
+                  "maximum": 12,
+                  "default": 0,
+                  "presentation": "slider",
+                  "unit": "px",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "buttonStyle": {
+              "type": "object",
+              "presentation": "overrides",
+              "properties": {
+                "background": {
+                  "title": "Fond",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "title": "Couleur unie",
+                      "properties": {
+                        "kind": {
+                          "const": "solid"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur",
+                          "default": "#00000000",
+                          "defaultFromSetting": "buttonBackgroundColor"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/$defs/gradient"
+                    },
+                    {
+                      "$ref": "#/$defs/radialGradient"
+                    },
+                    {
+                      "type": "object",
+                      "title": "Verre dépoli",
+                      "properties": {
+                        "kind": {
+                          "const": "blur"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Teinte",
+                          "default": "#00000000",
+                          "defaultFromSetting": "buttonBackgroundColor"
+                        },
+                        "radius": {
+                          "type": "number",
+                          "title": "Flou",
+                          "minimum": 0,
+                          "maximum": 100,
+                          "default": 18,
+                          "presentation": "slider",
+                          "unit": "px",
+                          "displayScale": 1,
+                          "displayOffset": 0
+                        },
+                        "tintOpacity": {
+                          "type": "number",
+                          "title": "Intensité de la teinte",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0.25,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "saturation": {
+                          "type": "number",
+                          "title": "Saturation",
+                          "minimum": 0,
+                          "maximum": 4,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "luminosity": {
+                          "type": "number",
+                          "title": "Luminosité",
+                          "minimum": 0,
+                          "maximum": 2,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "noiseOpacity": {
+                          "type": "number",
+                          "title": "Grain",
+                          "minimum": 0,
+                          "maximum": 0.25,
+                          "default": 0.015,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "fallbackColor": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur de repli",
+                          "default": "#00000000",
+                          "defaultFromSetting": "buttonBackgroundColor"
+                        },
+                        "overlay": {
+                          "$ref": "#/$defs/glassGradient"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color",
+                        "radius",
+                        "tintOpacity",
+                        "saturation",
+                        "luminosity",
+                        "noiseOpacity",
+                        "fallbackColor"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "foreground": {
+                  "type": "string",
+                  "format": "color",
+                  "title": "Couleur du texte",
+                  "default": "#FFFFFFFF",
+                  "defaultFromSetting": "buttonForegroundColor"
+                },
+                "opacity": {
+                  "type": "number",
+                  "title": "Opacité",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 1,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "cornerRadius": {
+                  "type": "number",
+                  "title": "Arrondi",
+                  "minimum": 0,
+                  "maximum": 64,
+                  "default": 8,
+                  "presentation": "slider",
+                  "unit": "px",
+                  "displayScale": 1,
+                  "displayOffset": 0,
+                  "defaultFromSetting": "buttonCornerRadius"
+                },
+                "borderBrush": {
+                  "type": "string",
+                  "format": "color",
+                  "title": "Contour",
+                  "default": "#FFFFFF00"
+                },
+                "borderThickness": {
+                  "type": "number",
+                  "title": "Épaisseur du contour",
+                  "minimum": 0,
+                  "maximum": 12,
+                  "default": 0,
+                  "presentation": "slider",
+                  "unit": "px",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "startButtonStyle": {
+              "type": "object",
+              "presentation": "overrides",
+              "properties": {
+                "background": {
+                  "title": "Fond",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "title": "Couleur unie",
+                      "properties": {
+                        "kind": {
+                          "const": "solid"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur",
+                          "default": "#00000000",
+                          "defaultFromSetting": "startBackgroundColor"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/$defs/gradient"
+                    },
+                    {
+                      "$ref": "#/$defs/radialGradient"
+                    },
+                    {
+                      "type": "object",
+                      "title": "Verre dépoli",
+                      "properties": {
+                        "kind": {
+                          "const": "blur"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Teinte",
+                          "default": "#00000000",
+                          "defaultFromSetting": "startBackgroundColor"
+                        },
+                        "radius": {
+                          "type": "number",
+                          "title": "Flou",
+                          "minimum": 0,
+                          "maximum": 100,
+                          "default": 18,
+                          "presentation": "slider",
+                          "unit": "px",
+                          "displayScale": 1,
+                          "displayOffset": 0
+                        },
+                        "tintOpacity": {
+                          "type": "number",
+                          "title": "Intensité de la teinte",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0.25,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "saturation": {
+                          "type": "number",
+                          "title": "Saturation",
+                          "minimum": 0,
+                          "maximum": 4,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "luminosity": {
+                          "type": "number",
+                          "title": "Luminosité",
+                          "minimum": 0,
+                          "maximum": 2,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "noiseOpacity": {
+                          "type": "number",
+                          "title": "Grain",
+                          "minimum": 0,
+                          "maximum": 0.25,
+                          "default": 0.015,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "fallbackColor": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur de repli",
+                          "default": "#00000000",
+                          "defaultFromSetting": "startBackgroundColor"
+                        },
+                        "overlay": {
+                          "$ref": "#/$defs/glassGradient"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color",
+                        "radius",
+                        "tintOpacity",
+                        "saturation",
+                        "luminosity",
+                        "noiseOpacity",
+                        "fallbackColor"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "foreground": {
+                  "type": "string",
+                  "format": "color",
+                  "title": "Couleur du texte",
+                  "default": "#FFFFFFFF",
+                  "defaultFromSetting": "startForegroundColor"
+                },
+                "opacity": {
+                  "type": "number",
+                  "title": "Opacité",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 1,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "borderBrush": {
+                  "type": "string",
+                  "format": "color",
+                  "title": "Contour",
+                  "default": "#FFFFFF00"
+                },
+                "borderThickness": {
+                  "type": "number",
+                  "title": "Épaisseur du contour",
+                  "minimum": 0,
+                  "maximum": 12,
+                  "default": 0,
+                  "presentation": "slider",
+                  "unit": "px",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "systemTrayStyle": {
+              "type": "object",
+              "presentation": "overrides",
+              "properties": {
+                "background": {
+                  "title": "Fond",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "title": "Couleur unie",
+                      "properties": {
+                        "kind": {
+                          "const": "solid"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur",
+                          "default": "#00000000",
+                          "defaultFromSetting": "trayBackgroundColor"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/$defs/gradient"
+                    },
+                    {
+                      "$ref": "#/$defs/radialGradient"
+                    },
+                    {
+                      "type": "object",
+                      "title": "Verre dépoli",
+                      "properties": {
+                        "kind": {
+                          "const": "blur"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Teinte",
+                          "default": "#00000000",
+                          "defaultFromSetting": "trayBackgroundColor"
+                        },
+                        "radius": {
+                          "type": "number",
+                          "title": "Flou",
+                          "minimum": 0,
+                          "maximum": 100,
+                          "default": 18,
+                          "presentation": "slider",
+                          "unit": "px",
+                          "displayScale": 1,
+                          "displayOffset": 0
+                        },
+                        "tintOpacity": {
+                          "type": "number",
+                          "title": "Intensité de la teinte",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0.25,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "saturation": {
+                          "type": "number",
+                          "title": "Saturation",
+                          "minimum": 0,
+                          "maximum": 4,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "luminosity": {
+                          "type": "number",
+                          "title": "Luminosité",
+                          "minimum": 0,
+                          "maximum": 2,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "noiseOpacity": {
+                          "type": "number",
+                          "title": "Grain",
+                          "minimum": 0,
+                          "maximum": 0.25,
+                          "default": 0.015,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "fallbackColor": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur de repli",
+                          "default": "#00000000",
+                          "defaultFromSetting": "trayBackgroundColor"
+                        },
+                        "overlay": {
+                          "$ref": "#/$defs/glassGradient"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color",
+                        "radius",
+                        "tintOpacity",
+                        "saturation",
+                        "luminosity",
+                        "noiseOpacity",
+                        "fallbackColor"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "foreground": {
+                  "type": "string",
+                  "format": "color",
+                  "title": "Couleur du texte",
+                  "default": "#FFFFFFFF",
+                  "defaultFromSetting": "trayForegroundColor"
+                },
+                "opacity": {
+                  "type": "number",
+                  "title": "Opacité",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 1,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "cornerRadius": {
+                  "type": "number",
+                  "title": "Arrondi",
+                  "minimum": 0,
+                  "maximum": 64,
+                  "default": 8,
+                  "presentation": "slider",
+                  "unit": "px",
+                  "displayScale": 1,
+                  "displayOffset": 0,
+                  "defaultFromSetting": "trayCornerRadius"
+                },
+                "borderBrush": {
+                  "type": "string",
+                  "format": "color",
+                  "title": "Contour",
+                  "default": "#FFFFFF00"
+                },
+                "borderThickness": {
+                  "type": "number",
+                  "title": "Épaisseur du contour",
+                  "minimum": 0,
+                  "maximum": 12,
+                  "default": 0,
+                  "presentation": "slider",
+                  "unit": "px",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "indicatorStyle": {
+              "type": "object",
+              "presentation": "overrides",
+              "properties": {
+                "background": {
+                  "title": "Fond",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "title": "Couleur unie",
+                      "properties": {
+                        "kind": {
+                          "const": "solid"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur",
+                          "default": "#65C8FFFF",
+                          "defaultFromSetting": "indicatorColor"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/$defs/gradient"
+                    },
+                    {
+                      "$ref": "#/$defs/radialGradient"
+                    },
+                    {
+                      "type": "object",
+                      "title": "Verre dépoli",
+                      "properties": {
+                        "kind": {
+                          "const": "blur"
+                        },
+                        "color": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Teinte",
+                          "default": "#65C8FFFF",
+                          "defaultFromSetting": "indicatorColor"
+                        },
+                        "radius": {
+                          "type": "number",
+                          "title": "Flou",
+                          "minimum": 0,
+                          "maximum": 100,
+                          "default": 18,
+                          "presentation": "slider",
+                          "unit": "px",
+                          "displayScale": 1,
+                          "displayOffset": 0
+                        },
+                        "tintOpacity": {
+                          "type": "number",
+                          "title": "Intensité de la teinte",
+                          "minimum": 0,
+                          "maximum": 1,
+                          "default": 0.25,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "saturation": {
+                          "type": "number",
+                          "title": "Saturation",
+                          "minimum": 0,
+                          "maximum": 4,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "luminosity": {
+                          "type": "number",
+                          "title": "Luminosité",
+                          "minimum": 0,
+                          "maximum": 2,
+                          "default": 1,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "noiseOpacity": {
+                          "type": "number",
+                          "title": "Grain",
+                          "minimum": 0,
+                          "maximum": 0.25,
+                          "default": 0.015,
+                          "presentation": "slider",
+                          "unit": "%",
+                          "displayScale": 100,
+                          "displayOffset": 0
+                        },
+                        "fallbackColor": {
+                          "type": "string",
+                          "format": "color",
+                          "title": "Couleur de repli",
+                          "default": "#65C8FFFF",
+                          "defaultFromSetting": "indicatorColor"
+                        },
+                        "overlay": {
+                          "$ref": "#/$defs/glassGradient"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "color",
+                        "radius",
+                        "tintOpacity",
+                        "saturation",
+                        "luminosity",
+                        "noiseOpacity",
+                        "fallbackColor"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "opacity": {
+                  "type": "number",
+                  "title": "Opacité",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 1,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "cornerRadius": {
+                  "type": "number",
+                  "title": "Arrondi",
+                  "minimum": 0,
+                  "maximum": 16,
+                  "default": 2,
+                  "presentation": "slider",
+                  "unit": "px",
+                  "displayScale": 1,
+                  "displayOffset": 0,
+                  "defaultFromSetting": "indicatorRadius"
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "radialGradient": {
+              "type": "object",
+              "title": "Dégradé radial",
+              "properties": {
+                "kind": {
+                  "const": "gradient"
+                },
+                "stops": {
+                  "type": "array",
+                  "title": "Couleurs et positions",
+                  "format": "gradient-stops",
+                  "minItems": 2,
+                  "maxItems": 64,
+                  "default": [
+                    {
+                      "offset": 0,
+                      "color": "#FF4FA0FF"
+                    },
+                    {
+                      "offset": 1,
+                      "color": "#865FFFFF"
+                    }
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "offset": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "color": {
+                        "type": "string",
+                        "format": "color"
+                      }
+                    },
+                    "required": [
+                      "offset",
+                      "color"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "shape": {
+                  "const": "radial"
+                },
+                "repetitions": {
+                  "type": "number",
+                  "title": "Nombre de répétitions",
+                  "minimum": 1,
+                  "maximum": 16,
+                  "default": 1,
+                  "presentation": "slider",
+                  "unit": "",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "extend": {
+                  "type": "string",
+                  "title": "Au-delà du dégradé",
+                  "enum": [
+                    "clamp",
+                    "wrap",
+                    "mirror"
+                  ],
+                  "enumNames": [
+                    "Prolonger les couleurs",
+                    "Répéter",
+                    "Refléter"
+                  ],
+                  "default": "clamp"
+                },
+                "centerX": {
+                  "type": "number",
+                  "title": "Centre horizontal",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.5,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "centerY": {
+                  "type": "number",
+                  "title": "Centre vertical",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.5,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "radiusX": {
+                  "type": "number",
+                  "title": "Rayon horizontal",
+                  "minimum": 0.01,
+                  "maximum": 2,
+                  "default": 0.5,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "radiusY": {
+                  "type": "number",
+                  "title": "Rayon vertical",
+                  "minimum": 0.01,
+                  "maximum": 2,
+                  "default": 0.5,
+                  "presentation": "slider",
+                  "unit": "%",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "motion": {
+                  "type": "string",
+                  "title": "Mouvement",
+                  "enum": [
+                    "none",
+                    "scroll",
+                    "pingpong"
+                  ],
+                  "enumNames": [
+                    "Fixe",
+                    "Défilement",
+                    "Aller-retour"
+                  ],
+                  "default": "none"
+                },
+                "duration": {
+                  "type": "number",
+                  "title": "Durée du cycle",
+                  "minimum": 1,
+                  "maximum": 120,
+                  "default": 12,
+                  "presentation": "slider",
+                  "unit": "s",
+                  "displayScale": 1,
+                  "displayOffset": 0,
+                  "showIf": {
+                    "property": "motion",
+                    "oneOf": [
+                      "scroll",
+                      "pingpong"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "kind",
+                "stops",
+                "shape",
+                "extend",
+                "repetitions",
+                "motion",
+                "duration",
+                "centerX",
+                "centerY",
+                "radiusX",
+                "radiusY"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "selectorLabel": "Élément"
+        }
+      }
+    },
+    {
+      "id": "motionJson",
+      "type": "textarea",
+      "label": "Mouvements et interactions",
+      "description": "Réglez les tailles en pourcentage et les durées en millisecondes. Les animations sont exécutées par Windows.",
+      "scope": "device",
+      "default": "",
+      "editor": {
+        "format": "json",
+        "blankIsDefault": true,
+        "schema": {
+          "type": "object",
+          "title": "Élément à animer",
+          "rawEditor": false,
+          "presentation": "inspector",
+          "default": {},
+          "properties": {
+            "button": {
+              "type": "object",
+              "title": "Applications",
+              "default": {},
+              "presentation": "overrides",
+              "additionalProperties": false,
+              "properties": {
+                "size": {
+                  "type": "number",
+                  "title": "Taille des boutons",
+                  "default": 1,
+                  "defaultFromSetting": "buttonScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "hoverSize": {
+                  "type": "number",
+                  "title": "Grossissement au survol",
+                  "default": 1.06,
+                  "defaultFromSetting": "buttonHoverScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": -100
+                },
+                "pressSize": {
+                  "type": "number",
+                  "title": "Grossissement au clic",
+                  "default": 0.96,
+                  "defaultFromSetting": "buttonPressScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": -100
+                },
+                "hoverOpacity": {
+                  "type": "number",
+                  "title": "Opacité au survol",
+                  "default": 1,
+                  "defaultFromSetting": "buttonHoverOpacity",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "pressOpacity": {
+                  "type": "number",
+                  "title": "Opacité au clic",
+                  "default": 0.92,
+                  "defaultFromSetting": "buttonPressOpacity",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "hoverDurationMs": {
+                  "type": "integer",
+                  "title": "Durée du survol",
+                  "default": 180,
+                  "defaultFromSetting": "buttonHoverDurationMs",
+                  "minimum": 0,
+                  "maximum": 2000,
+                  "unit": "ms",
+                  "presentation": "slider",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "pressDurationMs": {
+                  "type": "integer",
+                  "title": "Durée du clic",
+                  "default": 90,
+                  "defaultFromSetting": "buttonPressDurationMs",
+                  "minimum": 0,
+                  "maximum": 2000,
+                  "unit": "ms",
+                  "presentation": "slider",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "easing": {
+                  "type": "string",
+                  "title": "Progression",
+                  "enum": [
+                    "linear",
+                    "ease-out",
+                    "ease-in-out"
+                  ],
+                  "enumNames": [
+                    "Régulière",
+                    "Départ vif, arrivée douce",
+                    "Départ et arrivée doux"
+                  ],
+                  "default": "ease-out",
+                  "defaultFromSetting": "buttonEasing"
+                }
+              }
+            },
+            "startButton": {
+              "type": "object",
+              "title": "Démarrer",
+              "default": {},
+              "presentation": "overrides",
+              "additionalProperties": false,
+              "properties": {
+                "size": {
+                  "type": "number",
+                  "title": "Taille des boutons",
+                  "default": 1,
+                  "defaultFromSetting": "startScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "hoverSize": {
+                  "type": "number",
+                  "title": "Grossissement au survol",
+                  "default": 1.08,
+                  "defaultFromSetting": "startHoverScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": -100
+                },
+                "pressSize": {
+                  "type": "number",
+                  "title": "Grossissement au clic",
+                  "default": 0.96,
+                  "defaultFromSetting": "buttonPressScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": -100
+                },
+                "hoverOpacity": {
+                  "type": "number",
+                  "title": "Opacité au survol",
+                  "default": 1,
+                  "defaultFromSetting": "buttonHoverOpacity",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "pressOpacity": {
+                  "type": "number",
+                  "title": "Opacité au clic",
+                  "default": 0.92,
+                  "defaultFromSetting": "buttonPressOpacity",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "hoverDurationMs": {
+                  "type": "integer",
+                  "title": "Durée du survol",
+                  "default": 180,
+                  "defaultFromSetting": "startAnimationDurationMs",
+                  "minimum": 0,
+                  "maximum": 2000,
+                  "unit": "ms",
+                  "presentation": "slider",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "pressDurationMs": {
+                  "type": "integer",
+                  "title": "Durée du clic",
+                  "default": 90,
+                  "defaultFromSetting": "buttonPressDurationMs",
+                  "minimum": 0,
+                  "maximum": 2000,
+                  "unit": "ms",
+                  "presentation": "slider",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "easing": {
+                  "type": "string",
+                  "title": "Progression",
+                  "enum": [
+                    "linear",
+                    "ease-out",
+                    "ease-in-out"
+                  ],
+                  "enumNames": [
+                    "Régulière",
+                    "Départ vif, arrivée douce",
+                    "Départ et arrivée doux"
+                  ],
+                  "default": "ease-out",
+                  "defaultFromSetting": "buttonEasing"
+                }
+              }
+            },
+            "systemTray": {
+              "type": "object",
+              "title": "Zone système",
+              "default": {},
+              "presentation": "overrides",
+              "additionalProperties": false,
+              "properties": {
+                "size": {
+                  "type": "number",
+                  "title": "Taille des boutons",
+                  "default": 1,
+                  "defaultFromSetting": "trayScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "hoverSize": {
+                  "type": "number",
+                  "title": "Grossissement au survol",
+                  "default": 1.05,
+                  "defaultFromSetting": "trayHoverScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": -100
+                },
+                "pressSize": {
+                  "type": "number",
+                  "title": "Grossissement au clic",
+                  "default": 0.96,
+                  "defaultFromSetting": "buttonPressScale",
+                  "minimum": 0.5,
+                  "maximum": 1.5,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": -100
+                },
+                "hoverOpacity": {
+                  "type": "number",
+                  "title": "Opacité au survol",
+                  "default": 1,
+                  "defaultFromSetting": "buttonHoverOpacity",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "pressOpacity": {
+                  "type": "number",
+                  "title": "Opacité au clic",
+                  "default": 0.92,
+                  "defaultFromSetting": "buttonPressOpacity",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "unit": "%",
+                  "presentation": "slider",
+                  "displayScale": 100,
+                  "displayOffset": 0
+                },
+                "hoverDurationMs": {
+                  "type": "integer",
+                  "title": "Durée du survol",
+                  "default": 160,
+                  "defaultFromSetting": "trayAnimationDurationMs",
+                  "minimum": 0,
+                  "maximum": 2000,
+                  "unit": "ms",
+                  "presentation": "slider",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "pressDurationMs": {
+                  "type": "integer",
+                  "title": "Durée du clic",
+                  "default": 90,
+                  "defaultFromSetting": "buttonPressDurationMs",
+                  "minimum": 0,
+                  "maximum": 2000,
+                  "unit": "ms",
+                  "presentation": "slider",
+                  "displayScale": 1,
+                  "displayOffset": 0
+                },
+                "easing": {
+                  "type": "string",
+                  "title": "Progression",
+                  "enum": [
+                    "linear",
+                    "ease-out",
+                    "ease-in-out"
+                  ],
+                  "enumNames": [
+                    "Régulière",
+                    "Départ vif, arrivée douce",
+                    "Départ et arrivée doux"
+                  ],
+                  "default": "ease-out",
+                  "defaultFromSetting": "buttonEasing"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "id": "showAdvancedControls",
+      "type": "boolean",
+      "label": "Afficher les réglages experts",
+      "description": "Valeurs historiques et règles XAML ; leurs réglages enregistrés restent actifs même quand ils sont masqués.",
+      "default": false,
       "scope": "device"
     },
     {
@@ -46,13 +2022,18 @@
         }
       ],
       "scope": "device",
-      "parent": "advancedSection"
+      "parent": "advancedSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "layoutSection",
       "type": "section",
-      "label": "Layout and position",
-      "description": "Change the existing taskbar content inside its Windows window. Other screen edges depend on Windows support."
+      "label": "Disposition de la barre",
+      "description": "Change the existing taskbar content inside its Windows window. Other screen edges depend on Windows support.",
+      "defaultCollapsed": true
     },
     {
       "id": "surfaceWidthMode",
@@ -80,7 +2061,7 @@
     {
       "id": "surfaceWidth",
       "type": "range",
-      "label": "Custom width (px)",
+      "label": "Longueur visible",
       "default": 960,
       "min": 240,
       "max": 4096,
@@ -123,7 +2104,7 @@
     {
       "id": "surfaceHeight",
       "type": "range",
-      "label": "Content height (px · 0 = Windows)",
+      "label": "Hauteur visible · 0 = Windows",
       "default": 0,
       "min": 0,
       "max": 96,
@@ -135,7 +2116,7 @@
     {
       "id": "surfaceOffsetX",
       "type": "range",
-      "label": "Horizontal offset (px)",
+      "label": "Décalage horizontal",
       "default": 0,
       "min": -64,
       "max": 64,
@@ -147,7 +2128,7 @@
     {
       "id": "surfaceOffsetY",
       "type": "range",
-      "label": "Vertical offset (px)",
+      "label": "Décalage vertical",
       "default": 0,
       "min": -32,
       "max": 32,
@@ -160,7 +2141,11 @@
       "id": "surfaceSection",
       "type": "section",
       "label": "Taskbar surface",
-      "defaultCollapsed": false
+      "defaultCollapsed": true,
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "surfaceColor",
@@ -170,7 +2155,11 @@
       "default": "#1B2330FF",
       "alpha": true,
       "scope": "device",
-      "parent": "surfaceSection"
+      "parent": "surfaceSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "surfaceOpacity",
@@ -181,7 +2170,11 @@
       "max": 1,
       "step": 0.01,
       "scope": "device",
-      "parent": "surfaceSection"
+      "parent": "surfaceSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "surfaceRadius",
@@ -192,12 +2185,16 @@
       "max": 64,
       "step": 1,
       "scope": "device",
-      "parent": "surfaceSection"
+      "parent": "surfaceSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "surfaceInsetHorizontal",
       "type": "range",
-      "label": "Surface horizontal inset",
+      "label": "Espace intérieur horizontal",
       "default": 0,
       "min": -64,
       "max": 64,
@@ -208,7 +2205,7 @@
     {
       "id": "surfaceInsetVertical",
       "type": "range",
-      "label": "Surface vertical inset",
+      "label": "Espace intérieur vertical",
       "default": 0,
       "min": -64,
       "max": 64,
@@ -219,8 +2216,8 @@
     {
       "id": "buttonSection",
       "type": "section",
-      "label": "Taskbar buttons",
-      "defaultCollapsed": false
+      "label": "Dimensions des boutons d’application",
+      "defaultCollapsed": true
     },
     {
       "id": "buttonBackgroundColor",
@@ -229,7 +2226,11 @@
       "default": "#00000000",
       "alpha": true,
       "scope": "device",
-      "parent": "buttonSection"
+      "parent": "buttonSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonForegroundColor",
@@ -238,7 +2239,11 @@
       "default": "#FFFFFFFF",
       "alpha": true,
       "scope": "device",
-      "parent": "buttonSection"
+      "parent": "buttonSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonCornerRadius",
@@ -249,7 +2254,11 @@
       "max": 48,
       "step": 1,
       "scope": "device",
-      "parent": "buttonSection"
+      "parent": "buttonSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonPaddingHorizontal",
@@ -287,35 +2296,47 @@
     {
       "id": "buttonScale",
       "type": "range",
-      "label": "Button base scale",
+      "label": "Taille des boutons · 1 = 100 %",
       "default": 1,
       "min": 0.5,
       "max": 1.5,
       "step": 0.01,
       "scope": "device",
-      "parent": "buttonMotionSection"
+      "parent": "buttonMotionSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonHoverScale",
       "type": "range",
-      "label": "Button hover scale",
+      "label": "Taille au survol · 1 = 100 %",
       "default": 1.06,
       "min": 0.5,
       "max": 1.5,
       "step": 0.01,
       "scope": "device",
-      "parent": "buttonMotionSection"
+      "parent": "buttonMotionSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonPressScale",
       "type": "range",
-      "label": "Button press scale",
+      "label": "Taille au clic · 1 = 100 %",
       "default": 0.96,
       "min": 0.5,
       "max": 1.5,
       "step": 0.01,
       "scope": "device",
-      "parent": "buttonMotionSection"
+      "parent": "buttonMotionSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonHoverOpacity",
@@ -326,7 +2347,11 @@
       "max": 1,
       "step": 0.01,
       "scope": "device",
-      "parent": "buttonMotionSection"
+      "parent": "buttonMotionSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonPressOpacity",
@@ -337,7 +2362,11 @@
       "max": 1,
       "step": 0.01,
       "scope": "device",
-      "parent": "buttonMotionSection"
+      "parent": "buttonMotionSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonHoverDurationMs",
@@ -348,7 +2377,11 @@
       "max": 2000,
       "step": 10,
       "scope": "device",
-      "parent": "buttonMotionSection"
+      "parent": "buttonMotionSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonPressDurationMs",
@@ -359,7 +2392,11 @@
       "max": 2000,
       "step": 10,
       "scope": "device",
-      "parent": "buttonMotionSection"
+      "parent": "buttonMotionSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonEasing",
@@ -381,7 +2418,11 @@
         }
       ],
       "scope": "device",
-      "parent": "buttonMotionSection"
+      "parent": "buttonMotionSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "buttonWidth",
@@ -409,7 +2450,7 @@
     {
       "id": "buttonRotationDegrees",
       "type": "range",
-      "label": "App button rotation (°)",
+      "label": "Rotation des boutons (°)",
       "default": 0,
       "min": -180,
       "max": 180,
@@ -421,7 +2462,7 @@
     {
       "id": "buttonMotionSection",
       "type": "section",
-      "label": "Hover and press animations",
+      "label": "Animations des applications",
       "parent": "buttonSection",
       "defaultCollapsed": true,
       "description": "Animations run in Windows Composition when the pointer enters or presses a button; no polling loop."
@@ -429,7 +2470,7 @@
     {
       "id": "startSection",
       "type": "section",
-      "label": "Start button",
+      "label": "Bouton Démarrer",
       "defaultCollapsed": true
     },
     {
@@ -439,7 +2480,11 @@
       "default": "#00000000",
       "alpha": true,
       "scope": "device",
-      "parent": "startSection"
+      "parent": "startSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "startForegroundColor",
@@ -448,7 +2493,11 @@
       "default": "#FFFFFFFF",
       "alpha": true,
       "scope": "device",
-      "parent": "startSection"
+      "parent": "startSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "startScale",
@@ -459,7 +2508,11 @@
       "max": 1.5,
       "step": 0.01,
       "scope": "device",
-      "parent": "startSection"
+      "parent": "startSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "startHoverScale",
@@ -470,7 +2523,11 @@
       "max": 1.5,
       "step": 0.01,
       "scope": "device",
-      "parent": "startSection"
+      "parent": "startSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "startAnimationDurationMs",
@@ -481,12 +2538,16 @@
       "max": 2000,
       "step": 10,
       "scope": "device",
-      "parent": "startSection"
+      "parent": "startSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "traySection",
       "type": "section",
-      "label": "System tray",
+      "label": "Zone système",
       "defaultCollapsed": true
     },
     {
@@ -496,7 +2557,11 @@
       "default": "#00000000",
       "alpha": true,
       "scope": "device",
-      "parent": "traySection"
+      "parent": "traySection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "trayForegroundColor",
@@ -505,7 +2570,11 @@
       "default": "#FFFFFFFF",
       "alpha": true,
       "scope": "device",
-      "parent": "traySection"
+      "parent": "traySection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "trayCornerRadius",
@@ -516,7 +2585,11 @@
       "max": 48,
       "step": 1,
       "scope": "device",
-      "parent": "traySection"
+      "parent": "traySection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "trayPaddingHorizontal",
@@ -560,7 +2633,11 @@
       "max": 1.5,
       "step": 0.01,
       "scope": "device",
-      "parent": "traySection"
+      "parent": "traySection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "trayHoverScale",
@@ -571,7 +2648,11 @@
       "max": 1.5,
       "step": 0.01,
       "scope": "device",
-      "parent": "traySection"
+      "parent": "traySection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "trayAnimationDurationMs",
@@ -582,12 +2663,16 @@
       "max": 2000,
       "step": 10,
       "scope": "device",
-      "parent": "traySection"
+      "parent": "traySection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "indicatorSection",
       "type": "section",
-      "label": "Taskbar indicators",
+      "label": "Indicateurs des applications",
       "defaultCollapsed": true
     },
     {
@@ -597,7 +2682,11 @@
       "default": "#65C8FFFF",
       "alpha": true,
       "scope": "device",
-      "parent": "indicatorSection"
+      "parent": "indicatorSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "indicatorThickness",
@@ -619,7 +2708,11 @@
       "max": 16,
       "step": 1,
       "scope": "device",
-      "parent": "indicatorSection"
+      "parent": "indicatorSection",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "indicatorVisible",
@@ -632,9 +2725,13 @@
     {
       "id": "advancedSection",
       "type": "section",
-      "label": "Compose your own rules",
+      "label": "Réglages experts",
       "defaultCollapsed": true,
-      "description": "Combine targets, materials, native visual states and layout. Guided editing and JSON use the same saved profile."
+      "description": "Combine targets, materials, native visual states and layout. Guided editing and JSON use the same saved profile.",
+      "showIf": {
+        "setting": "showAdvancedControls",
+        "equals": true
+      }
     },
     {
       "id": "advancedProfileJson",

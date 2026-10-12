@@ -394,6 +394,70 @@ void ApplyPreset(Config* config) {
     }
 }
 
+bool ParseAppearance(const Json& settings, Config* config, std::string* error) {
+    const auto found = settings.find("appearanceJson");
+    if (found == settings.end()) return true;
+    if (!found->is_string() || found->get_ref<const std::string&>().size() > 1024 * 1024) {
+        *error = "appearanceJson must be a string of at most 1 MiB"; return false;
+    }
+    const auto& text = found->get_ref<const std::string&>();
+    if (std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isspace(c); })) return true;
+    auto appearance = Json::parse(text);
+    if (!appearance.is_object()) { *error = "appearanceJson must be an object"; return false; }
+    for (auto region = appearance.begin(); region != appearance.end(); ++region) {
+        if ((region.key() != "surface" && region.key() != "button" && region.key() != "startButton" && region.key() != "systemTray" && region.key() != "indicator") || !region->is_object()) {
+            *error = "appearanceJson has an unsupported element"; return false;
+        }
+        for (auto state = region->begin(); state != region->end(); ++state) {
+            if ((state.key() != "normal" && state.key() != "hover" && state.key() != "pressed" && state.key() != "active") || !state->is_object() ||
+                (region.key() == "surface" && state.key() != "normal") ||
+                (region.key() == "indicator" && state.key() != "normal" && state.key() != "active") ||
+                ((region.key() == "startButton" || region.key() == "systemTray") && state.key() == "active")) {
+                *error = "appearanceJson has an unsupported state"; return false;
+            }
+            if (state.key() == "active") {
+                Rule subscription; subscription.selector.semantic = region.key();
+                subscription.state_group = "RunningIndicatorStates"; subscription.state = "ActiveRunningIndicator";
+                config->rules.push_back(std::move(subscription));
+            }
+            for (auto property = state->begin(); property != state->end(); ++property) {
+                const auto& key = property.key();
+                if ((key != "background" && key != "foreground" && key != "opacity" && key != "cornerRadius" && key != "borderBrush" && key != "borderThickness") ||
+                    !ValidPropertyValue(XamlPropertyName(key), *property) || property->is_null()) {
+                    *error = "appearanceJson has an invalid property: " + key; return false;
+                }
+                if ((key == "opacity" || key == "cornerRadius" || key == "borderThickness") &&
+                    (!IsFiniteNumber(*property) || property->get<double>() < 0 || property->get<double>() > (key == "opacity" ? 1 : key == "cornerRadius" ? 64 : 12))) {
+                    *error = "appearanceJson number is outside its bounds: " + key; return false;
+                }
+            }
+        }
+    }
+    config->appearance = std::move(appearance);
+    return true;
+}
+
+bool ParseConsumerMotion(const Json& settings, Config* config, std::string* error) {
+    const auto found = settings.find("motionJson"); if (found == settings.end()) return true;
+    if (!found->is_string() || found->get_ref<const std::string&>().size() > 16384) { *error = "motionJson must be a string of at most 16 KiB"; return false; }
+    const auto& text=found->get_ref<const std::string&>();
+    if (std::all_of(text.begin(),text.end(),[](unsigned char c){return std::isspace(c);})) return true;
+    auto motion=Json::parse(text); if (!motion.is_object()) { *error="motionJson must be an object"; return false; }
+    for (auto region=motion.begin();region!=motion.end();++region) {
+        if ((region.key()!="button" && region.key()!="startButton" && region.key()!="systemTray") || !region->is_object()) { *error="motionJson has an unsupported element"; return false; }
+        for(auto field=region->begin();field!=region->end();++field) {
+            const auto& key=field.key();
+            if (key=="easing") { if (*field=="linear"||*field=="ease-out"||*field=="ease-in-out") continue; }
+            else {
+                const bool size=key=="size"||key=="hoverSize"||key=="pressSize",opacity=key=="hoverOpacity"||key=="pressOpacity",duration=key=="hoverDurationMs"||key=="pressDurationMs";
+                if ((size||opacity||duration) && IsFiniteNumber(*field) && field->get<double>() >= (size?.5:0) && field->get<double>() <= (size?1.5:opacity?1:2000) && (!duration||field->is_number_integer())) continue;
+            }
+            *error="motionJson has an invalid field: "+key; return false;
+        }
+    }
+    config->motion=std::move(motion); return true;
+}
+
 bool ParseDeviceSettings(const Json& settings, Config* config, std::string* error) {
     if (!settings.is_object()) {
         *error = "deviceSettings must be an object";
@@ -472,7 +536,7 @@ bool ParseDeviceSettings(const Json& settings, Config* config, std::string* erro
         !ReadBoolean(settings, "indicatorVisible", &config->indicator_visible, error)) {
         return false;
     }
-    return ParseAdvanced(settings, config, error);
+    return ParseAdvanced(settings, config, error) && ParseAppearance(settings, config, error) && ParseConsumerMotion(settings, config, error);
 }
 } // namespace
 
@@ -529,13 +593,19 @@ bool ValidPropertyValue(std::string_view name, const Json &value) {
         if (kind == "blur")
             return color("color", true) && color("fallbackColor") && bounded("radius", 0, 100) &&
                    bounded("saturation", 0, 4) && bounded("luminosity", 0, 2) &&
-                   bounded("noiseOpacity", 0, 0.25) && bounded("tintOpacity", 0, 1);
+                   bounded("noiseOpacity", 0, 0.25) && bounded("tintOpacity", 0, 1) &&
+                   (!value.contains("overlay") || (value["overlay"].is_object() && value["overlay"].value("kind", "") == "gradient" && ValidPropertyValue("Background", value["overlay"])));
         if (kind == "solid" && !color("color", true))
             return false;
         if (kind == "acrylic" &&
             (!color("color", true) || !color("fallbackColor") || !bounded("tintOpacity", 0, 1)))
             return false;
         if (kind == "gradient") {
+            if (!bounded("angle", -180, 180) || !bounded("repetitions", 1, 16) || !bounded("duration", 1, 120) ||
+                !bounded("centerX", 0, 1) || !bounded("centerY", 0, 1) || !bounded("radiusX", 0.01, 2) || !bounded("radiusY", 0.01, 2)) return false;
+            for (const auto& [key, options] : std::vector<std::pair<const char*, std::vector<std::string>>>{
+                {"shape", {"linear", "radial"}}, {"extend", {"clamp", "wrap", "mirror"}}, {"motion", {"none", "scroll", "pingpong"}}})
+                if (value.contains(key) && (!value[key].is_string() || std::find(options.begin(), options.end(), value[key].get<std::string>()) == options.end())) return false;
             if (!value.contains("stops") || !value["stops"].is_array() ||
                 value["stops"].size() < 2 || value["stops"].size() > 64)
                 return false;

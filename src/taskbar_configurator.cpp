@@ -197,6 +197,7 @@ struct MotionSettings {
     uint32_t hover_duration_ms = 0;
     uint32_t press_duration_ms = 0;
     taskbar_config::Easing easing = taskbar_config::Easing::ease_out;
+    bool operator==(const MotionSettings&) const = default;
 };
 
 struct PropertyState {
@@ -208,6 +209,7 @@ struct PropertyState {
     bool has_callback = false;
     bool callback_enabled = false;
     Json collection_values;
+    Json source_value;
     std::vector<foundation::IInspectable> collection_original;
 };
 
@@ -696,14 +698,23 @@ void AddDesiredProperty(ElementEntry &entry, std::vector<PropertyState> *desired
     if (!property && !strict && !property_name.empty() &&
         std::islower(static_cast<unsigned char>(property_name.front()))) return;
     foundation::IInspectable inspectable{nullptr};
+    Json expanded;
     try {
-        const auto expanded = ExpandValue(entry, value);
+        expanded = ExpandValue(entry, value);
         if (expanded.is_object() && expanded.contains("$skip"))
             return;
         if (value.is_object() && (value.contains("expression") || value.contains("ref")) &&
             expanded.is_null())
             return;
-        if (property && !expanded.is_object() && !expanded.is_null() &&
+        const auto previous = std::find_if(entry.properties.begin(), entry.properties.end(), [&](const auto& state) {
+            return property ? state.property == property : state.name == property_name;
+        });
+        if (previous != entry.properties.end() &&
+            (previous->source_value == expanded || taskbar_xaml::TryUpdateBrush(previous->desired, previous->source_value, expanded))) {
+            property = previous->property;
+            inspectable = previous->desired;
+        }
+        if (!inspectable && property && !expanded.is_object() && !expanded.is_null() &&
             !(property_name == "cornerRadius" && expanded.is_array())) {
             const auto key = entry.type + ":" + property_name + ":" + expanded.dump();
             auto found = g_simple_value_cache.find(key);
@@ -734,6 +745,7 @@ void AddDesiredProperty(ElementEntry &entry, std::vector<PropertyState> *desired
     state.property = property;
     state.name = property_name;
     state.desired = std::move(inspectable);
+    state.source_value = std::move(expanded);
     const auto previous = std::find_if(desired->begin(), desired->end(),
                                        [&](const auto &v) { return v.property == state.property; });
     if (previous == desired->end())
@@ -1048,11 +1060,14 @@ bool ApplyProperty(ElementEntry &entry, PropertyState &desired) {
         stored.name = desired.name;
         stored.original = object.ReadLocalValue(stored.property);
         stored.desired = desired.desired;
+        stored.source_value = desired.source_value;
         (void)RegisterPropertyCallback(entry, stored);
         entry.properties.push_back(std::move(stored));
         state = std::prev(entry.properties.end());
     } else {
+        if (state->desired == desired.desired) { state->source_value = desired.source_value; return true; }
         state->desired = desired.desired;
+        state->source_value = desired.source_value;
         (void)RegisterPropertyCallback(entry, *state);
     }
 
@@ -1197,6 +1212,7 @@ void Animate(ElementEntry& entry, bool pressed) {
     }
 }
 
+void ApplyEntry(ElementEntry& entry, bool configure_motion = true);
 void ConfigurePointerHandlers(ElementEntry& entry) {
     const bool should_animate = HasDirectAnimation(entry) ||
         std::any_of(g_ui_config.animations.begin(), g_ui_config.animations.end(),
@@ -1223,6 +1239,7 @@ void ConfigurePointerHandlers(ElementEntry& entry) {
             const auto found = g_entries.find(handle);
             if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
             found->second.pointer_inside = true;
+            if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
             Animate(found->second, found->second.pointer_pressed);
         });
     });
@@ -1233,6 +1250,8 @@ void ConfigurePointerHandlers(ElementEntry& entry) {
             const auto found = g_entries.find(handle);
             if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
             found->second.pointer_inside = false;
+            found->second.pointer_pressed = false;
+            if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
             Animate(found->second, false);
         });
     });
@@ -1243,6 +1262,7 @@ void ConfigurePointerHandlers(ElementEntry& entry) {
             const auto found = g_entries.find(handle);
             if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
             found->second.pointer_pressed = true;
+            if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
             Animate(found->second, true);
         });
     });
@@ -1253,6 +1273,7 @@ void ConfigurePointerHandlers(ElementEntry& entry) {
             const auto found = g_entries.find(handle);
             if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
             found->second.pointer_pressed = false;
+            if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
             Animate(found->second, false);
         });
     });
@@ -1325,6 +1346,37 @@ void BuildDirectProperties(ElementEntry& entry, const Config& config,
         }
         for (auto property = rule.properties.begin(); property != rule.properties.end(); ++property) {
             AddDesiredProperty(entry, desired, property.key(), property.value(), true);
+        }
+    }
+    const auto region = config.appearance.find(entry.semantic);
+    if (region != config.appearance.end()) {
+        // Consumer choices override the inherited flat controls/expert rules.
+        // Hover inherits normal, pressed inherits both, without duplicated data.
+        bool active = false;
+        if (region->contains("active")) {
+            xaml::DependencyObject current = entry.element;
+            for (unsigned depth = 0; current && depth < 32 && !active; ++depth) {
+                if (auto target = current.try_as<xaml::FrameworkElement>())
+                    for (const auto& group : xaml::VisualStateManager::GetVisualStateGroups(target))
+                        if (group.Name() == L"RunningIndicatorStates" && group.CurrentState() && group.CurrentState().Name() == L"ActiveRunningIndicator") active = true;
+                current = media::VisualTreeHelper::GetParent(current);
+            }
+        }
+        for (const auto* state : {"normal", "active", "hover", "pressed"}) {
+            if (strcmp(state, "active") == 0 && !active) continue;
+            if ((strcmp(state, "hover") == 0 && !entry.pointer_inside) ||
+                (strcmp(state, "pressed") == 0 && !entry.pointer_pressed)) continue;
+            const auto values = region->find(state);
+            if (values == region->end()) continue;
+            for (auto property = values->begin(); property != values->end(); ++property) {
+                auto key = property.key();
+                if (entry.semantic == "indicator" && key == "background") key = "fill";
+                if (entry.element.try_as<shapes::Rectangle>()) {
+                    if (key == "borderBrush") key = "Stroke";
+                    else if (key == "borderThickness") key = "StrokeThickness";
+                }
+                AddDesiredProperty(entry, desired, key, property.value());
+            }
         }
     }
 }
@@ -1494,7 +1546,9 @@ void ReadCaptures() {
     }
 }
 
-void ApplyEntry(ElementEntry& entry) {
+void ApplyEntry(ElementEntry& entry, bool configure_motion) {
+    const auto previous_motion = entry.motion;
+    const auto previous_scale = entry.base_scale;
     ConfigureRuleHandlers(entry);
     std::vector<PropertyState> desired;
     BuildDirectProperties(entry, g_ui_config, &desired);
@@ -1519,7 +1573,20 @@ void ApplyEntry(ElementEntry& entry) {
     entry.writing = false;
 
     ConfigureAdvancedMotion(entry, g_ui_config);
-    ConfigurePointerHandlers(entry);
+    if (const auto motion = g_ui_config.motion.find(entry.semantic); motion != g_ui_config.motion.end()) {
+        entry.base_scale = motion->value("size", entry.base_scale);
+        entry.motion.hover_scale = motion->value("hoverSize", entry.motion.hover_scale);
+        entry.motion.press_scale = motion->value("pressSize", entry.motion.press_scale);
+        entry.motion.hover_opacity = motion->value("hoverOpacity", entry.motion.hover_opacity);
+        entry.motion.press_opacity = motion->value("pressOpacity", entry.motion.press_opacity);
+        entry.motion.hover_duration_ms = motion->value("hoverDurationMs", entry.motion.hover_duration_ms);
+        entry.motion.press_duration_ms = motion->value("pressDurationMs", entry.motion.press_duration_ms);
+        if (motion->contains("easing")) entry.motion.easing = motion->at("easing") == "linear" ? taskbar_config::Easing::linear : motion->at("easing") == "ease-in-out" ? taskbar_config::Easing::ease_in_out : taskbar_config::Easing::ease_out;
+    }
+    if (configure_motion || previous_motion != entry.motion || previous_scale != entry.base_scale) {
+        ConfigurePointerHandlers(entry);
+        if (entry.pointer_inside || entry.pointer_pressed) Animate(entry, entry.pointer_pressed);
+    }
     entry.matched = HasTrackedState(entry);
     UpdateDiagnostics();
 }
@@ -1645,11 +1712,27 @@ bool ScheduleSettingsApply(const std::shared_ptr<Config>& config) {
                         next = g_pending_config;
                         revision = g_pending_revision;
                     }
+                    const auto previous_appearance = g_ui_config.appearance;
+                    auto base_previous = g_ui_config, base_next = next;
+                    base_previous.appearance = base_next.appearance = Json::object();
+                    const bool appearance_only = base_previous == base_next;
+                    if (g_ui_config.enabled != next.enabled || g_ui_config.rules != next.rules ||
+                        g_ui_config.captures != next.captures || g_ui_config.resources != next.resources)
+                        ++g_ui_profile_revision;
                     g_ui_config = std::move(next);
-                    ++g_ui_profile_revision;
-                    taskbar_xaml::ClearCache();
-                g_simple_value_cache.clear();g_reported_rules.clear();
-                    ApplyAllOnUi();
+                    g_reported_rules.clear();
+                    if (appearance_only) {
+                        SetLastError(S_OK);
+                        for (auto& [handle, entry] : g_entries) {
+                            (void)handle;
+                            const auto before = previous_appearance.find(entry.semantic);
+                            const auto after = g_ui_config.appearance.find(entry.semantic);
+                            if ((before == previous_appearance.end()) != (after == g_ui_config.appearance.end()) ||
+                                (before != previous_appearance.end() && after != g_ui_config.appearance.end() && *before != *after))
+                                ApplyEntry(entry, false);
+                        }
+                        IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.settingsApplied);
+                    } else ApplyAllOnUi();
                     std::lock_guard lock(g_settings_mutex);
                     if (revision == g_pending_revision) {
                         if (generation == g_lifecycle_generation.load(std::memory_order_acquire)) {
@@ -2313,6 +2396,14 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
             return E_FAIL;
         rectangle.SetValue(rectangle_background.property, rectangle_background.value);
         rectangle.ClearValue(rectangle_background.property);
+        stage = "consumer contour and original restoration";
+        ElementEntry outline; outline.element = rectangle; outline.ui_element = rectangle;
+        outline.type = "Windows.UI.Xaml.Shapes.Rectangle"; outline.name = "BackgroundFill"; outline.semantic = "surface";
+        g_ui_config = Config{};
+        g_ui_config.appearance = Json{{"surface",Json{{"normal",Json{{"borderBrush","#FF4488FF"},{"borderThickness",3}}}}}};
+        ApplyEntry(outline);
+        if (!rectangle.Stroke() || rectangle.StrokeThickness() != 3 || FAILED(RestoreEntry(outline)) || rectangle.Stroke()) return E_FAIL;
+        g_ui_config = Config{};
         try {
             (void)taskbar_xaml::Resolve(rectangle, "Foreground", solid);
             return E_FAIL;
@@ -2391,6 +2482,8 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
                  {"noiseOpacity", 0.02}});
         taskbar_xaml::ClearCache();
         g_simple_value_cache.clear();
+        stage = "native gradient motion, glass overlay and incremental material updates";
+        taskbar_xaml::TestMaterialUpdates(xaml::Hosting::ElementCompositionPreview::GetElementVisual(grid));
         stage = "reused observer snapshots";
         winrt::check_hresult(TestReusedObservation(grid));
         }
