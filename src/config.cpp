@@ -147,6 +147,9 @@ bool ParseSelector(const Json& value, Selector* selector, std::string* error) {
 }
 
 bool ValidPropertyValue(std::string_view name, const Json& value) {
+    if ((name == "width" || name == "height") && value.is_string()) {
+        return value == "auto";
+    }
     static constexpr std::array<std::string_view, 8> string_properties = {
         "background", "foreground", "fill", "stroke", "visibility",
         "horizontalAlignment", "verticalAlignment", "text"
@@ -368,17 +371,36 @@ bool ParseDeviceSettings(const Json& settings, Config* config, std::string* erro
         else if (profile == "custom") config->profile = Profile::custom;
         else { *error = "profile is not a supported preset"; return false; }
     }
+    if (!ReadString(settings, "surfaceWidthMode", &config->surface_width_mode, error) ||
+        !ReadString(settings, "surfaceAlignment", &config->surface_alignment, error)) return false;
+    if (config->surface_width_mode != "native" && config->surface_width_mode != "content" &&
+        config->surface_width_mode != "fixed") {
+        *error = "surfaceWidthMode must be native, content, or fixed";
+        return false;
+    }
+    if (config->surface_alignment != "native" && config->surface_alignment != "left" &&
+        config->surface_alignment != "center" && config->surface_alignment != "right") {
+        *error = "surfaceAlignment must be native, left, center, or right";
+        return false;
+    }
     if (!ReadColor(settings, "surfaceColor", &config->surface_color, error) ||
         !ReadNumber(settings, "surfaceOpacity", 0.0, 1.0, &config->surface_opacity, error) ||
         !ReadNumber(settings, "surfaceRadius", 0.0, 64.0, &config->surface_radius, error) ||
         !ReadNumber(settings, "surfaceInsetHorizontal", -64.0, 64.0, &config->surface_inset_horizontal, error) ||
         !ReadNumber(settings, "surfaceInsetVertical", -64.0, 64.0, &config->surface_inset_vertical, error) ||
+        !ReadNumber(settings, "surfaceWidth", 240.0, 4096.0, &config->surface_width, error) ||
+        !ReadNumber(settings, "surfaceHeight", 0.0, 96.0, &config->surface_height, error) ||
+        !ReadNumber(settings, "surfaceOffsetX", -64.0, 64.0, &config->surface_offset_x, error) ||
+        !ReadNumber(settings, "surfaceOffsetY", -32.0, 32.0, &config->surface_offset_y, error) ||
         !ReadColor(settings, "buttonBackgroundColor", &config->button_background_color, error) ||
         !ReadColor(settings, "buttonForegroundColor", &config->button_foreground_color, error) ||
         !ReadNumber(settings, "buttonCornerRadius", 0.0, 48.0, &config->button_corner_radius, error) ||
         !ReadNumber(settings, "buttonPaddingHorizontal", 0.0, 64.0, &config->button_padding_horizontal, error) ||
         !ReadNumber(settings, "buttonPaddingVertical", 0.0, 64.0, &config->button_padding_vertical, error) ||
         !ReadNumber(settings, "buttonSpacing", 0.0, 64.0, &config->button_spacing, error) ||
+        !ReadNumber(settings, "buttonWidth", 0.0, 160.0, &config->button_width, error) ||
+        !ReadNumber(settings, "buttonHeight", 0.0, 96.0, &config->button_height, error) ||
+        !ReadNumber(settings, "buttonRotationDegrees", -180.0, 180.0, &config->button_rotation_degrees, error) ||
         !ReadNumber(settings, "buttonScale", 0.5, 1.5, &config->button_scale, error) ||
         !ReadNumber(settings, "buttonHoverScale", 0.5, 1.5, &config->button_hover_scale, error) ||
         !ReadNumber(settings, "buttonPressScale", 0.5, 1.5, &config->button_press_scale, error) ||
@@ -403,7 +425,8 @@ bool ParseDeviceSettings(const Json& settings, Config* config, std::string* erro
         !ReadInteger(settings, "trayAnimationDurationMs", 0, 2000, &config->tray_animation_duration_ms, error) ||
         !ReadColor(settings, "indicatorColor", &config->indicator_color, error) ||
         !ReadNumber(settings, "indicatorThickness", 0.0, 16.0, &config->indicator_thickness, error) ||
-        !ReadNumber(settings, "indicatorRadius", 0.0, 16.0, &config->indicator_radius, error)) {
+        !ReadNumber(settings, "indicatorRadius", 0.0, 16.0, &config->indicator_radius, error) ||
+        !ReadBoolean(settings, "indicatorVisible", &config->indicator_visible, error)) {
         return false;
     }
     ApplyPreset(config);

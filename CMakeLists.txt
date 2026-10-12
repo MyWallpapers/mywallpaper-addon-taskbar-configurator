@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MyWallpaperTaskbarConfigurator VERSION 0.1.0 LANGUAGES C CXX)
+project(MyWallpaperTaskbarConfigurator VERSION 0.1.7 LANGUAGES C CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Taskbar Configurator requires Windows x64 and MSVC")
@@ -49,7 +49,7 @@ target_compile_options(taskbar_config_tests PRIVATE
     "/pathmap:${CMAKE_CURRENT_SOURCE_DIR}=.")
 
 enable_testing()
-add_test(NAME taskbar_config_contract COMMAND taskbar_config_tests)
+add_test(NAME taskbar_config_contract COMMAND taskbar_config_tests "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json")
 
 add_executable(taskbar_visual_tree_callback_tests
     src/config.cpp
@@ -62,10 +62,13 @@ target_link_libraries(taskbar_visual_tree_callback_tests PRIVATE
     windowsapp
     ole32
     oleaut32
-    user32)
+    user32
+    CoreMessaging)
 target_include_directories(taskbar_visual_tree_callback_tests PRIVATE include)
 target_compile_options(taskbar_visual_tree_callback_tests PRIVATE
     /utf-8 /W4 /permissive- /EHsc /Zc:preprocessor /Brepro /experimental:deterministic
     "/pathmap:${CMAKE_CURRENT_SOURCE_DIR}=.")
 add_test(NAME taskbar_visual_tree_callback_contract
     COMMAND taskbar_visual_tree_callback_tests)
+add_test(NAME taskbar_composition_contract
+    COMMAND taskbar_visual_tree_callback_tests --composition)

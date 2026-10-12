@@ -19,6 +19,10 @@
 #include <winrt/Windows.UI.Xaml.Input.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
+#ifdef MW_TASKBAR_CALLBACK_TESTING
+#include <DispatcherQueue.h>
+#include <winrt/Windows.System.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -26,10 +30,12 @@
 #include <cerrno>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cwchar>
 #include <cwctype>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -439,6 +445,9 @@ xaml::DependencyProperty PropertyFor(const xaml::FrameworkElement& element,
 
 foundation::IInspectable MakePropertyValue(const xaml::FrameworkElement& element,
     const std::string& name, const Json& value) {
+    if ((name == "width" || name == "height") && value == "auto") {
+        return winrt::box_value(std::numeric_limits<double>::quiet_NaN());
+    }
     if (name == "background" || name == "foreground" || name == "fill" || name == "stroke") {
         return BrushValue(value);
     }
@@ -573,6 +582,10 @@ void ConfigureMotion(ElementEntry& entry, const Config& config,
             config.button_padding_vertical);
         AddPadding(entry, desired, "spacing", config.button_spacing / 2.0,
             config.button_spacing / 2.0);
+        if (config.button_width > 0.0) AddNumber(entry, desired, "width", config.button_width);
+        if (config.button_height > 0.0) AddNumber(entry, desired, "height", config.button_height);
+        if (config.button_rotation_degrees != 0.0)
+            AddNumber(entry, desired, "rotation", config.button_rotation_degrees);
     } else if (entry.semantic == "startButton") {
         entry.base_scale = config.start_scale;
         entry.motion.hover_scale = config.start_hover_scale;
@@ -740,7 +753,7 @@ bool ApplyProperty(ElementEntry& entry, PropertyState& desired) {
             entry.original_rotation = entry.visual.RotationAngle();
             entry.rotation_saved = true;
         }
-        entry.visual.RotationAngle(winrt::unbox_value<float>(desired.desired));
+        entry.visual.RotationAngleInDegrees(winrt::unbox_value<float>(desired.desired));
         const auto existing = std::find_if(entry.properties.begin(), entry.properties.end(),
             [](const PropertyState& item) { return item.name == "rotation"; });
         if (existing == entry.properties.end()) entry.properties.push_back(std::move(desired));
@@ -989,14 +1002,35 @@ void BuildDirectProperties(ElementEntry& entry, const Config& config,
         AddNumber(entry, desired, "cornerRadius", config.surface_radius);
         if (entry.name == "TaskbarFrame") {
             AddDesiredProperty(entry, desired, "margin", Json::array({
-                config.surface_inset_horizontal, config.surface_inset_vertical}));
+                config.surface_inset_horizontal + config.surface_offset_x,
+                config.surface_inset_vertical + config.surface_offset_y,
+                config.surface_inset_horizontal - config.surface_offset_x,
+                config.surface_inset_vertical - config.surface_offset_y}));
+            if (config.surface_width_mode == "content")
+                AddDesiredProperty(entry, desired, "width", Json("auto"));
+            else if (config.surface_width_mode == "fixed")
+                AddNumber(entry, desired, "width", config.surface_width);
+            if (config.surface_height > 0.0)
+                AddNumber(entry, desired, "height", config.surface_height);
+            if (config.surface_alignment != "native")
+                AddDesiredProperty(entry, desired, "horizontalAlignment", Json(config.surface_alignment));
         }
     } else if (entry.semantic == "indicator") {
         AddColor(entry, desired, "fill", config.indicator_color);
         AddNumber(entry, desired, "strokeThickness", config.indicator_thickness);
         AddNumber(entry, desired, "cornerRadius", config.indicator_radius);
+        if (!config.indicator_visible)
+            AddDesiredProperty(entry, desired, "visibility", Json("collapsed"));
     } else {
         ConfigureMotion(entry, config, desired);
+    }
+
+    // Let the existing XAML layout measure the dock; hit testing follows that
+    // layout rather than a detached Composition offset or a second taskbar.
+    if (entry.name == "RootGrid" && config.surface_width_mode == "content" &&
+        std::find(entry.ancestor_names.begin(), entry.ancestor_names.end(),
+            "TaskbarFrame") != entry.ancestor_names.end()) {
+        AddDesiredProperty(entry, desired, "width", Json("auto"));
     }
 
     for (const auto& rule : config.rules) {
@@ -1110,6 +1144,7 @@ void PropertyChanged(uint64_t handle, xaml::DependencyProperty property,
 }
 
 void ApplyAllOnUi() {
+    SetLastError(S_OK);
     for (auto& pair : g_entries) ApplyEntry(pair.second);
     IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.settingsApplied);
 }
@@ -1655,6 +1690,40 @@ MwStatus MW_CALL Stop() {
 } // namespace
 
 #ifdef MW_TASKBAR_CALLBACK_TESTING
+extern "C" HRESULT __stdcall MwTaskbarTestRotationAndAutoDimension() noexcept {
+    try {
+        struct Apartment {
+            Apartment() { winrt::init_apartment(winrt::apartment_type::single_threaded); }
+            ~Apartment() { winrt::clear_factory_cache(); winrt::uninit_apartment(); }
+        } apartment;
+        winrt::clear_factory_cache();
+        winrt::Windows::System::DispatcherQueueController queue{nullptr};
+        const DispatcherQueueOptions options{sizeof(DispatcherQueueOptions),
+            DQTYPE_THREAD_CURRENT, DQTAT_COM_STA};
+        winrt::check_hresult(CreateDispatcherQueueController(options,
+            reinterpret_cast<ABI::Windows::System::IDispatcherQueueController**>(winrt::put_abi(queue))));
+        composition::Compositor compositor;
+        if (!compositor) return E_POINTER;
+        ElementEntry entry;
+        entry.visual = compositor.CreateContainerVisual();
+        if (!entry.visual) return E_POINTER;
+        entry.has_visual = true;
+        entry.visual.RotationAngle(0.5f);
+        const auto visual = entry.visual;
+        PropertyState desired;
+        desired.name = "rotation";
+        desired.desired = winrt::box_value(30.0f);
+        if (!ApplyProperty(entry, desired) ||
+            std::abs(entry.visual.RotationAngleInDegrees() - 30.0f) > 0.01f)
+            return E_FAIL;
+        if (FAILED(RestoreProperty(entry, entry.properties.front())) ||
+            std::abs(visual.RotationAngle() - 0.5f) > 0.001f || entry.has_visual)
+            return E_FAIL;
+        auto automatic = MakePropertyValue(nullptr, "width", Json("auto"));
+        return std::isnan(winrt::unbox_value<double>(automatic)) ? S_OK : E_FAIL;
+    } catch (...) { return winrt::to_hresult(); }
+}
+
 struct DiagnosticCacheFixture : winrt::implements<DiagnosticCacheFixture,
     IXamlDiagnostics> {
     explicit DiagnosticCacheFixture(int32_t marker)
