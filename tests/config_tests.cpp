@@ -49,14 +49,15 @@ void TestDefaultsAndPresets() {
     neutral_settings["profile"] = "neutral";
     auto neutral = ParseSettingsJson(neutral_settings);
     Check(static_cast<bool>(neutral), "neutral profile with all persisted settings parses");
-    Check(neutral.config.surface_color == "#202020FF", "neutral profile applies its fixed dark surface");
+    Check(neutral.config.surface_color == "#1B2330FF", "saved values override legacy palette defaults");
+    Check(ParseSettingsJson(Json{{"profile","neutral"}}).config.surface_color == "#202020FF", "partial legacy profiles retain their fallback palette");
 
     auto rose_settings = FullDefaults();
     rose_settings["profile"] = "rose";
     auto rose = ParseSettingsJson(rose_settings);
     Check(static_cast<bool>(rose), "rose profile with all persisted control defaults parses");
-    Check(rose.config.surface_color == "#7A1746FF", "rose preset overrides stale color defaults");
-    Check(rose.config.button_background_color == "#A52D68FF", "rose preset reaches button background");
+    Check(rose.config.surface_color == "#1B2330FF", "a legacy identifier never overwrites saved colors");
+    Check(rose.config.button_background_color == "#00000000", "button colors remain editable in a legacy profile");
 
     auto custom_settings = FullDefaults();
     custom_settings["profile"] = "custom";
@@ -91,6 +92,32 @@ void TestValidation() {
     Check(static_cast<bool>(advanced), "valid advanced rules and animation parse");
     Check(advanced.config.rules.size() == 1, "advanced selector rule retained");
     Check(advanced.config.animations.size() == 1, "advanced animation retained");
+}
+void TestStructuredProfiles() {
+    auto settings=FullDefaults();
+    settings["advancedProfileJson"]=R"({"schemaVersion":2,"variables":{"gap":12},"resources":{"panel":{"light":"#FFFFFFFF","dark":"#202020FF"}},"captures":[{"name":"taskbarWidth","selector":{"name":"TaskbarFrame"},"property":"ActualWidth"}],"rules":[{"selector":{"type":"Rectangle","parents":[{"type":"Grid"}],"index":1,"where":{"Visibility":0}},"stateGroup":"CommonStates","state":"PointerOver","properties":{"Background":{"kind":"blur","color":"#20202080","radius":18,"noiseOpacity":0.02},"Grid.Column":2,"RenderTransform":{"kind":"transform","scaleX":1.2},"Margin":{"expression":"taskbarWidth > 0 ? gap : 0"},"Shadow":null}}]})";
+    const auto parsed=ParseSettingsJson(settings);
+    Check(static_cast<bool>(parsed),"typed materials, visual states, precise targets and captures parse together");
+    Check(parsed.config.rules.size()==1 && parsed.config.rules[0].state=="PointerOver","native visual state survives parsing");
+    Check(taskbar_config::EvaluateExpression("false ? 1 / 0 : max(3, gap * 2)",Json{{"gap",12}})==24,"unused conditional branches are not evaluated");
+    Check(taskbar_config::EvaluateExpression("true ? 'Visible' : missing + 1",Json::object())=="Visible","conditional text and missing captures are lazy");
+    Check(taskbar_config::EvaluateExpression("true ? skip() : 12",Json::object()).contains("$skip"),"skip is distinct from clearing a local value");
+    bool rejected=false;try{(void)taskbar_config::EvaluateExpression("1/0",Json::object());}catch(...){rejected=true;}Check(rejected,"division by zero rejects the calculated value");
+    Check(taskbar_config::XamlValueMarkup(Json("#11223380"), true)=="#80112233","alpha-last colors convert to native ARGB");
+    Check(taskbar_config::XamlValueMarkup(Json("#11223380"))=="#11223380","text resembling a color remains exact");
+    Check(taskbar_config::XamlValueMarkup(Json{{"kind","solid"},{"color",Json{{"resource","SystemAccentColor"}}}}).find("ThemeResource")!=std::string::npos,"native accent references survive brush construction");
+    Check(taskbar_config::XmlEscape("a\"<&") == "a&quot;&lt;&amp;","XAML attributes cannot escape the synthetic setter");
+    Check(!taskbar_config::ValidPropertyValue("width",Json::array({1,2})),"vector values cannot masquerade as dimensions");
+    Check(!taskbar_config::ValidPropertyValue("Background",Json{{"kind","blur"},{"color","#202020FF"},{"tintOpacity",2}}),"invalid effect opacity is rejected before injection");
+    Check(!taskbar_config::ValidPropertyValue("ActualWidth",42),"read-only dimensions are captured instead of written");
+    Check(!taskbar_config::ValidPropertyValue("RenderTransformOrigin",Json::array({0,0,0,0})),"origins require exactly two components");
+    Check(!taskbar_config::ValidPropertyValue("ColumnDefinitions",Json{{"kind","columns"},{"sizes",Json::array({"64oops"})}}),"malformed grid sizes are rejected before application");
+    Check(!taskbar_config::ValidPropertyValue("Fill",Json{{"kind","gradient"},{"stops",Json::array({Json{{"offset",0},{"color","invalid"}},Json{{"offset",1},{"color","#FFFFFFFF"}}})}}),"gradient stop colors are validated");
+    settings["advancedProfileJson"]=42; Check(!ParseSettingsJson(settings),"non-string structured settings produce a real error");
+    settings["advancedProfileJson"]=" \n\t"; Check(static_cast<bool>(ParseSettingsJson(settings)),"blank documents remove custom rules");
+    settings["advancedProfileJson"]=std::string(1024*1024+1,' ');Check(!ParseSettingsJson(settings),"profile size bounds precede JSON parsing");
+    settings["advancedProfileJson"]=R"({"schemaVersion":2,"rules":[{"selector":{"semantic":"button"},"state":"PointerOver","properties":{"Opacity":0.5}}]})";
+    Check(!ParseSettingsJson(settings),"a visual state requires its group");
 }
 void TestGeometryAndManifest(const char* manifest_path) {
     auto settings = FullDefaults();
@@ -145,6 +172,7 @@ void TestGeometryAndManifest(const char* manifest_path) {
 int main(int argc, char** argv) {
     TestDefaultsAndPresets();
     TestValidation();
+    TestStructuredProfiles();
     if (argc > 1) TestGeometryAndManifest(argv[1]);
     if (failures) return EXIT_FAILURE;
     std::cout << "Configuration contract tests passed.\n";

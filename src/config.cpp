@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cctype>
 #include <limits>
 #include <string_view>
 
@@ -121,7 +122,7 @@ bool ReadEasing(const Json& object, const char* key, Easing* easing,
     return true;
 }
 
-bool ParseSelector(const Json& value, Selector* selector, std::string* error) {
+bool ParseSelector(const Json& value, Selector* selector, std::string* error, unsigned depth = 0) {
     if (!value.is_object()) {
         *error = "selector must be an object";
         return false;
@@ -132,6 +133,23 @@ bool ParseSelector(const Json& value, Selector* selector, std::string* error) {
         !ReadString(value, "ancestorName", &selector->ancestor_name, error)) {
         return false;
     }
+    if (depth > 16 || !ReadInteger(value, "index", 0, 4096, &selector->index, error) ||
+        !ReadBoolean(value, "root", &selector->root, error) ||
+        !ReadBoolean(value, "exactType", &selector->exact_type, error)) return false;
+    if (value.contains("where")) {
+        if (!value["where"].is_object() || value["where"].size() > 32) { *error = "where must be a property map of at most 32 entries"; return false; }
+        for (const auto& item : value["where"].items()) {
+            if (item.key().empty() || item.key().size() > 128 || !item.value().is_primitive()) {
+                *error = "where compares named properties with primitive values";
+                return false;
+            }
+        }
+        selector->where = value["where"];
+    }
+    if (value.contains("parents")) {
+        if (!value["parents"].is_array() || value["parents"].size() > 16) { *error = "parents must be an array of at most 16 selectors, nearest first"; return false; }
+        for (const auto& parent : value["parents"]) { Selector parsed; if (!ParseSelector(parent, &parsed, error, depth + 1)) return false; selector->parents.push_back(std::move(parsed)); }
+    }
     if (selector->semantic.empty() && selector->name.empty() &&
         selector->type.empty()) {
         *error = "selector needs semantic, name, or type";
@@ -139,14 +157,16 @@ bool ParseSelector(const Json& value, Selector* selector, std::string* error) {
     }
     if (!selector->semantic.empty() && selector->semantic != "surface" &&
         selector->semantic != "button" && selector->semantic != "startButton" &&
-        selector->semantic != "systemTray" && selector->semantic != "indicator") {
-        *error = "selector semantic must be surface, button, startButton, systemTray, or indicator";
+        selector->semantic != "systemTray" && selector->semantic != "indicator" &&
+        selector->semantic != "search" && selector->semantic != "widgets" &&
+        selector->semantic != "clock" && selector->semantic != "icon" && selector->semantic != "label") {
+        *error = "unknown semantic target";
         return false;
     }
     return true;
 }
 
-bool ValidPropertyValue(std::string_view name, const Json& value) {
+bool LegacyPropertyValue(std::string_view name, const Json& value) {
     if ((name == "width" || name == "height") && value.is_string()) {
         return value == "auto";
     }
@@ -204,9 +224,11 @@ bool ValidPropertyValue(std::string_view name, const Json& value) {
 
 bool ParseAdvanced(const Json& settings, Config* config, std::string* error) {
     const auto found = settings.find("advancedProfileJson");
-    if (found == settings.end() || !found->is_string()) return found == settings.end();
+    if (found == settings.end()) return true;
+    if (!found->is_string()) { *error = "advancedProfileJson must be a string"; return false; }
     const std::string text = found->get<std::string>();
-    if (text.empty()) return true;
+    if (text.size() > 1024 * 1024) { *error = "advancedProfileJson exceeds 1 MiB"; return false; }
+    if (std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isspace(c); })) return true;
     Json profile;
     try {
         profile = Json::parse(text);
@@ -215,8 +237,8 @@ bool ParseAdvanced(const Json& settings, Config* config, std::string* error) {
         return false;
     }
     if (!profile.is_object() || !profile.contains("schemaVersion") ||
-        !profile["schemaVersion"].is_number_integer() || profile["schemaVersion"] != 1) {
-        *error = "advancedProfileJson must be an object with schemaVersion 1";
+        !profile["schemaVersion"].is_number_integer() || (profile["schemaVersion"] != 1 && profile["schemaVersion"] != 2)) {
+        *error = "advancedProfileJson must be an object with schemaVersion 1 or 2";
         return false;
     }
     const auto rules = profile.find("rules");
@@ -234,6 +256,10 @@ bool ParseAdvanced(const Json& settings, Config* config, std::string* error) {
             }
             Rule rule;
             if (!ParseSelector(item["selector"], &rule.selector, error)) return false;
+            if (!ReadString(item, "stateGroup", &rule.state_group, error) ||
+                !ReadString(item, "state", &rule.state, error) ||
+                !ReadBoolean(item, "enabled", &rule.enabled, error)) return false;
+            if (rule.state.empty() != rule.state_group.empty()) { *error = "state and stateGroup must be set together"; return false; }
             for (auto property = item["properties"].begin(); property != item["properties"].end(); ++property) {
                 if (!ValidPropertyValue(property.key(), property.value())) {
                     *error = std::string("unsupported value for property '") + property.key() + "'";
@@ -243,6 +269,20 @@ bool ParseAdvanced(const Json& settings, Config* config, std::string* error) {
             rule.properties = item["properties"];
             config->rules.push_back(std::move(rule));
         }
+    }
+    for (const auto* key : {"variables", "resources"}) {
+        if (profile.contains(key) && (!profile[key].is_object() || profile[key].size() > 128)) { *error = std::string(key) + " must be an object of at most 128 entries"; return false; }
+    }
+    config->variables = profile.value("variables", Json::object());
+    config->resources = profile.value("resources", Json::object());
+    if (profile.contains("captures")) {
+        if (!profile["captures"].is_array() || profile["captures"].size() > 128) { *error = "captures must be an array of at most 128 entries"; return false; }
+        for (const auto& capture : profile["captures"]) {
+            Selector target; std::string property, name;
+            if (!capture.is_object() || !capture.contains("selector") || !ParseSelector(capture["selector"], &target, error) ||
+                !ReadString(capture, "property", &property, error) || !ReadString(capture, "name", &name, error) || property.empty() || name.empty()) { *error = "each capture requires selector, property and name"; return false; }
+        }
+        config->captures = profile["captures"];
     }
     const auto animations = profile.find("animations");
     if (animations != profile.end()) {
@@ -371,6 +411,9 @@ bool ParseDeviceSettings(const Json& settings, Config* config, std::string* erro
         else if (profile == "custom") config->profile = Profile::custom;
         else { *error = "profile is not a supported preset"; return false; }
     }
+    // Legacy palette identifiers supply defaults only. Explicit saved values
+    // always remain editable and take precedence over that fallback.
+    ApplyPreset(config);
     if (!ReadString(settings, "surfaceWidthMode", &config->surface_width_mode, error) ||
         !ReadString(settings, "surfaceAlignment", &config->surface_alignment, error)) return false;
     if (config->surface_width_mode != "native" && config->surface_width_mode != "content" &&
@@ -429,17 +472,169 @@ bool ParseDeviceSettings(const Json& settings, Config* config, std::string* erro
         !ReadBoolean(settings, "indicatorVisible", &config->indicator_visible, error)) {
         return false;
     }
-    ApplyPreset(config);
     return ParseAdvanced(settings, config, error);
 }
 } // namespace
 
-ParseResult ParseSettings(const char* snapshot) {
-    if (!snapshot) return ParseResult{Config{}, "settings snapshot is null"};
+Selector ParseSelectorJson(const Json &value) {
+    Selector selector;
+    std::string error;
+    if (!ParseSelector(value, &selector, &error))
+        throw std::runtime_error(error);
+    return selector;
+}
+
+bool ValidPropertyValue(std::string_view name, const Json &value) {
+    if (name.empty() || name.size() > 128 ||
+        !std::all_of(name.begin(), name.end(),
+                     [](unsigned char c) { return std::isalnum(c) || c == '_' || c == '.'; }))
+        return false;
+    if (XamlPropertyName(name) == "ActualWidth" || XamlPropertyName(name) == "ActualHeight")
+        return false;
+    if (LegacyPropertyValue(name, value))
+        return true;
+    // Lowercase legacy spellings keep their validation, while XAML names and
+    // structured values enable the complete native property surface.
+    if (value.is_object()) {
+        if (value.contains("ref"))
+            return value.size() == 1 && value["ref"].is_string();
+        if (value.contains("expression"))
+            return value.size() == 1 && value["expression"].is_string() &&
+                   value["expression"].get_ref<const std::string &>().size() <= 4096;
+        if (value.contains("resource"))
+            return value.size() == 1 && value["resource"].is_string();
+        if (value.contains("xaml"))
+            return value.size() == 1 && value["xaml"].is_string() &&
+                   value["xaml"].get_ref<const std::string &>().size() <= 65536;
+        if (!value.contains("kind") || !value["kind"].is_string())
+            return false;
+        const auto kind = value["kind"].get<std::string>();
+        const auto bounded = [&](const char *key, double low, double high) {
+            const auto field = value.find(key);
+            return field == value.end() || (IsFiniteNumber(*field) && field->get<double>() >= low &&
+                                            field->get<double>() <= high);
+        };
+        const auto colorValue = [&](const Json &field) {
+            return field.is_object() &&
+                       (field.contains("resource") || field.contains("ref") ||
+                        field.contains("expression")) &&
+                       ValidPropertyValue("Color", field) ||
+                   field.is_string() &&
+                       (IsHexColor(field.get<std::string>()) || field == "transparent");
+        };
+        const auto color = [&](const char *key, bool required = false) {
+            const auto field = value.find(key);
+            return field == value.end() ? !required : colorValue(*field);
+        };
+        if (kind == "blur")
+            return color("color", true) && color("fallbackColor") && bounded("radius", 0, 100) &&
+                   bounded("saturation", 0, 4) && bounded("luminosity", 0, 2) &&
+                   bounded("noiseOpacity", 0, 0.25) && bounded("tintOpacity", 0, 1);
+        if (kind == "solid" && !color("color", true))
+            return false;
+        if (kind == "acrylic" &&
+            (!color("color", true) || !color("fallbackColor") || !bounded("tintOpacity", 0, 1)))
+            return false;
+        if (kind == "gradient") {
+            if (!value.contains("stops") || !value["stops"].is_array() ||
+                value["stops"].size() < 2 || value["stops"].size() > 64)
+                return false;
+            for (const auto &stop : value["stops"])
+                if (!stop.is_object() || !stop.contains("offset") ||
+                    !IsFiniteNumber(stop["offset"]) || stop["offset"].get<double>() < 0 ||
+                    stop["offset"].get<double>() > 1 || !stop.contains("color") ||
+                    !colorValue(stop["color"]))
+                    return false;
+            for (const auto *point : {"start", "end"})
+                if (value.contains(point) &&
+                    (!value[point].is_array() || value[point].size() != 2 ||
+                     !std::all_of(value[point].begin(), value[point].end(), IsFiniteNumber)))
+                    return false;
+        }
+        if (kind == "columns" || kind == "rows") {
+            if (!value.contains("sizes") || !value["sizes"].is_array() ||
+                value["sizes"].size() > 32)
+                return false;
+            for (const auto &size : value["sizes"]) {
+                if (IsFiniteNumber(size) && size.get<double>() >= 0)
+                    continue;
+                if (!size.is_string())
+                    return false;
+                const auto text = size.get<std::string>();
+                if (text == "Auto" || text == "auto" || text == "*")
+                    continue;
+                const auto literal =
+                    !text.empty() && text.back() == '*' ? text.substr(0, text.size() - 1) : text;
+                try {
+                    size_t used = 0;
+                    const double number = std::stod(literal, &used);
+                    if (used != literal.size() || !std::isfinite(number) || number < 0)
+                        return false;
+                } catch (...) {
+                    return false;
+                }
+            }
+        }
+        if (kind == "transform") {
+            static constexpr std::array<std::string_view, 10> fields = {
+                "scaleX", "scaleY", "rotation", "translateX", "translateY",
+                "skewX",  "skewY",  "centerX",  "centerY",    "kind"};
+            for (auto it = value.begin(); it != value.end(); ++it)
+                if (std::find(fields.begin(), fields.end(), it.key()) == fields.end() ||
+                    it.key() != "kind" && !IsFiniteNumber(it.value()))
+                    return false;
+        }
+        if (kind == "transform3d" || kind == "projection" || kind == "perspective") {
+            for (auto it = value.begin(); it != value.end(); ++it)
+                if (it.key() != "kind" && !IsFiniteNumber(it.value()))
+                    return false;
+            if (kind == "perspective" && !bounded("depth", 1, 100000))
+                return false;
+        }
+        if (kind == "image" && (!value.contains("source") || !value["source"].is_string() ||
+                                value["source"].get_ref<const std::string &>().empty()))
+            return false;
+        if (kind == "transition" && !bounded("durationMs", 0, 5000))
+            return false;
+        try {
+            (void)XamlValueMarkup(value);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    if (value.is_null())
+        return true;
+    if (value.is_array()) {
+        const auto native = XamlPropertyName(name);
+        if (native != "Margin" && native != "Padding" && native != "BorderThickness" &&
+            native != "CornerRadius" && native != "RenderTransformOrigin")
+            return false;
+        return (native == "RenderTransformOrigin" ? value.size() == 2
+                                                  : value.size() == 2 || value.size() == 4) &&
+               std::all_of(value.begin(), value.end(), [](const auto &v) {
+                   return v.is_number() && std::isfinite(v.template get<double>());
+               });
+    }
+    // Explicit native XAML names resolve and validate against the actual type.
+    if (!std::isupper(static_cast<unsigned char>(name.front())) && name.find('.') == name.npos &&
+        name != "borderBrush" && name != "borderThickness" && name != "radiusX" &&
+        name != "radiusY" && name != "fontFamily" && name != "fontWeight" &&
+        name != "textAlignment" && name != "renderTransform" && name != "renderTransformOrigin" &&
+        name != "backgroundTransition")
+        return false;
+    return value.is_string() || value.is_boolean() ||
+           (value.is_number() && std::isfinite(value.get<double>()));
+}
+
+ParseResult ParseSettings(const char *snapshot) {
+    if (!snapshot)
+        return ParseResult{Config{}, "settings snapshot is null"};
     try {
         return ParseSettingsJson(Json::parse(snapshot));
-    } catch (const std::exception& exception) {
-        return ParseResult{Config{}, std::string("settings snapshot is invalid JSON: ") + exception.what()};
+    } catch (const std::exception &exception) {
+        return ParseResult{Config{},
+                           std::string("settings snapshot is invalid JSON: ") + exception.what()};
     }
 }
 

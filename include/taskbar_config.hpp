@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <nlohmann/json.hpp>
 
@@ -27,6 +28,11 @@ struct Selector {
     std::string name;
     std::string type;
     std::string ancestor_name;
+    std::vector<Selector> parents;
+    nlohmann::json where = nlohmann::json::object();
+    uint32_t index = 0;
+    bool root = false;
+    bool exact_type = false;
 };
 
 struct Animation {
@@ -43,6 +49,9 @@ struct Animation {
 struct Rule {
     Selector selector;
     nlohmann::json properties = nlohmann::json::object();
+    std::string state_group;
+    std::string state;
+    bool enabled = true;
 };
 
 struct Config {
@@ -99,6 +108,9 @@ struct Config {
     double indicator_thickness = 2.0;
     double indicator_radius = 2.0;
     bool indicator_visible = true;
+    nlohmann::json variables = nlohmann::json::object();
+    nlohmann::json captures = nlohmann::json::array();
+    nlohmann::json resources = nlohmann::json::object();
     std::vector<Rule> rules;
     std::vector<Animation> animations;
 };
@@ -115,5 +127,11 @@ inline constexpr std::size_t kMaximumAnimations = 128;
 
 ParseResult ParseSettings(const char* snapshot);
 ParseResult ParseSettingsJson(const nlohmann::json& snapshot);
+bool ValidPropertyValue(std::string_view name, const nlohmann::json& value);
+std::string XamlPropertyName(std::string_view name);
+std::string XamlValueMarkup(const nlohmann::json& value, bool color_value = false);
+std::string XmlEscape(std::string_view text);
+nlohmann::json EvaluateExpression(std::string_view expression, const nlohmann::json& variables);
+Selector ParseSelectorJson(const nlohmann::json& value);
 
 }  // namespace taskbar_config

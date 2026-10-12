@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MyWallpaperTaskbarConfigurator VERSION 0.1.7 LANGUAGES C CXX)
+project(MyWallpaperTaskbarConfigurator VERSION 0.1.8 LANGUAGES C CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Taskbar Configurator requires Windows x64 and MSVC")
@@ -22,11 +22,14 @@ add_subdirectory("${MW_NATIVE_ENGINE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/native-en
 
 add_library(taskbar_configurator SHARED
     src/config.cpp
+    src/profile_values.cpp
+    src/xaml_values.cpp
     src/taskbar_configurator.cpp
     src/taskbar_configurator.def)
 target_link_libraries(taskbar_configurator PRIVATE
     MyWallpaperNativeEngine::SDK
     windowsapp
+    shcore
     ole32
     oleaut32
     user32)
@@ -41,6 +44,7 @@ set_target_properties(taskbar_configurator PROPERTIES
 
 add_executable(taskbar_config_tests
     src/config.cpp
+    src/profile_values.cpp
     tests/config_tests.cpp)
 target_link_libraries(taskbar_config_tests PRIVATE MyWallpaperNativeEngine::SDK)
 target_include_directories(taskbar_config_tests PRIVATE include)
@@ -53,6 +57,8 @@ add_test(NAME taskbar_config_contract COMMAND taskbar_config_tests "${CMAKE_CURR
 
 add_executable(taskbar_visual_tree_callback_tests
     src/config.cpp
+    src/profile_values.cpp
+    src/xaml_values.cpp
     src/taskbar_configurator.cpp
     tests/visual_tree_callback_tests.cpp)
 target_compile_definitions(taskbar_visual_tree_callback_tests PRIVATE
@@ -60,6 +66,7 @@ target_compile_definitions(taskbar_visual_tree_callback_tests PRIVATE
 target_link_libraries(taskbar_visual_tree_callback_tests PRIVATE
     MyWallpaperNativeEngine::SDK
     windowsapp
+    shcore
     ole32
     oleaut32
     user32
@@ -72,3 +79,7 @@ add_test(NAME taskbar_visual_tree_callback_contract
     COMMAND taskbar_visual_tree_callback_tests)
 add_test(NAME taskbar_composition_contract
     COMMAND taskbar_visual_tree_callback_tests --composition)
+add_test(NAME taskbar_rich_xaml_contract
+    COMMAND taskbar_visual_tree_callback_tests --rich-xaml)
+target_link_options(taskbar_visual_tree_callback_tests PRIVATE
+    "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/tests/xaml-test.manifest")
