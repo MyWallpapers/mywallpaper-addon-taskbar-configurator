@@ -2418,7 +2418,6 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
         ApplyEntry(outline);
         if (!rectangle.Stroke() || rectangle.StrokeThickness() != 3 || FAILED(RestoreEntry(outline)) || rectangle.Stroke()) return E_FAIL;
         g_ui_config = Config{};
-        stage = "consumer active appearance state transitions";
         stage = "appearance fixture XAML parsing";
         auto fixture = xaml::Markup::XamlReader::Load(
             L"<ContentControl xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' "
