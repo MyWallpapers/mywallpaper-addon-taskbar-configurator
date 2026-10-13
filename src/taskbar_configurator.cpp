@@ -4,6 +4,7 @@
 #include "taskbar_config.hpp"
 #include "taskbar_diagnostics.h"
 #include "xaml_values.hpp"
+#include "composition_diagnostics_guard.hpp"
 
 #include <Windows.h>
 #include <ocidl.h>
@@ -172,6 +173,11 @@ struct UiCompletion {
     HANDLE event = nullptr;
     std::atomic<HRESULT> result{E_PENDING};
 };
+
+// InitializeXamlDiagnosticsEx can return before the asynchronous SetSite call.
+// One process-lifetime completion prevents reconnecting an already pending TAP.
+UiCompletion g_diagnostics_site_ready;
+bool g_diagnostics_connection_requested = false;
 
 struct UiCompletionResult {
     bool had_operation = false;
@@ -2113,13 +2119,23 @@ struct DiagnosticsSite : winrt::implements<DiagnosticsSite, IObjectWithSite> {
         try {
             site.copy_from(value);
             if (!site) return S_OK;
+            if (g_diagnostics_site_ready.result.load(std::memory_order_acquire) == S_OK)
+                return S_OK;
             auto diagnostics = site.as<IXamlDiagnostics>();
-            g_visual_tree = site.as<IVisualTreeService>();
-            g_diagnostics_watcher = winrt::make_self<VisualTreeWatcher>(std::move(diagnostics));
-            g_observer = g_diagnostics_watcher.as<IVisualTreeServiceCallback2>();
+            auto visual_tree = site.as<IVisualTreeService>();
+            auto watcher = winrt::make_self<VisualTreeWatcher>(std::move(diagnostics));
+            auto observer = watcher.as<IVisualTreeServiceCallback2>();
+            g_visual_tree = std::move(visual_tree);
+            g_diagnostics_watcher = std::move(watcher);
+            g_observer = std::move(observer);
             g_site_object = site;
+            g_diagnostics_site_ready.Complete(S_OK);
             return S_OK;
-        } catch (...) { return winrt::to_hresult(); }
+        } catch (...) {
+            const HRESULT result = winrt::to_hresult();
+            g_diagnostics_site_ready.Complete(result);
+            return result;
+        }
     }
 
     HRESULT STDMETHODCALLTYPE GetSite(REFIID iid, void** result) noexcept override {
@@ -2145,20 +2161,32 @@ HRESULT AdviseTree() noexcept {
     if (!g_visual_tree || !g_observer) return E_NOINTERFACE;
     HRESULT result = E_FAIL;
     try {
+        const MwStatus installed = taskbar_diagnostics::InstallCompositionGuard(g_host_api);
+        if (installed != MW_OK) return E_FAIL;
         WorkerCounter worker_counter;
-        std::thread worker([&] { result = g_visual_tree->AdviseVisualTreeChange(g_observer.get()); });
+        std::thread worker([&] {
+            taskbar_diagnostics::CompositionEnumerationScope scope;
+            result = g_visual_tree->AdviseVisualTreeChange(g_observer.get());
+        });
         worker.join();
         g_tree_advised = SUCCEEDED(result);
         if (g_tree_advised) {
             SetDiagnostic(&MwTaskbarConfiguratorLifecycleDiagnosticsBlock[1], 1);
             IncrementDiagnostic(&MwTaskbarConfiguratorLifecycleDiagnosticsBlock[2]);
         }
+        if (taskbar_diagnostics::RemoveCompositionGuard() != MW_OK) return E_FAIL;
         return result;
-    } catch (...) { return winrt::to_hresult(); }
+    } catch (...) {
+        (void)taskbar_diagnostics::RemoveCompositionGuard();
+        return winrt::to_hresult();
+    }
 }
 
 HRESULT ConnectDiagnostics() noexcept {
-    if (g_visual_tree && g_site_object && g_observer) return S_OK;
+    try {
+    if (g_diagnostics_site_ready.result.load(std::memory_order_acquire) == S_OK)
+        return S_OK;
+    if (!g_diagnostics_site_ready.event) return E_OUTOFMEMORY;
     HMODULE module = GetModuleHandleW(L"Windows.UI.Xaml.dll");
     if (!module) return HRESULT_FROM_WIN32(GetLastError());
     using Initialize = HRESULT (WINAPI*)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, CLSID, LPCWSTR);
@@ -2176,21 +2204,37 @@ HRESULT ConnectDiagnostics() noexcept {
     if (!length || length >= path.size()) return HRESULT_FROM_WIN32(GetLastError());
     path.resize(length);
 
-    for (unsigned attempt = 1; attempt <= 8; ++attempt) {
-        const std::wstring endpoint = L"VisualDiagConnection" + std::to_wstring(attempt);
-        HRESULT result = E_FAIL;
-        {
-            WorkerCounter worker_counter;
-            std::thread worker([&] {
-                result = initialize(endpoint.c_str(), GetCurrentProcessId(), nullptr,
-                    path.c_str(), kDiagnosticsClass, nullptr);
-            });
-            worker.join();
+    HRESULT last_connection_error = E_FAIL;
+    if (!g_diagnostics_connection_requested) {
+        ResetEvent(g_diagnostics_site_ready.event);
+        g_diagnostics_site_ready.result.store(E_PENDING, std::memory_order_release);
+        for (unsigned attempt = 1; attempt <= 8; ++attempt) {
+            const std::wstring endpoint = L"VisualDiagConnection" + std::to_wstring(attempt);
+            HRESULT result = E_FAIL;
+            {
+                WorkerCounter worker_counter;
+                std::thread worker([&] {
+                    result = initialize(endpoint.c_str(), GetCurrentProcessId(), nullptr,
+                        path.c_str(), kDiagnosticsClass, nullptr);
+                });
+                worker.join();
+            }
+            if (SUCCEEDED(result)) {
+                g_diagnostics_connection_requested = true;
+                break;
+            }
+            last_connection_error = result;
         }
-        if (SUCCEEDED(result) && g_visual_tree && g_site_object && g_observer) return S_OK;
-        if (FAILED(result) && result != HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) SetLastError(result);
     }
-    return E_FAIL;
+    if (!g_diagnostics_connection_requested) return last_connection_error;
+    const DWORD wait = WaitForSingleObject(g_diagnostics_site_ready.event,
+        kUiDispatchTimeoutMs);
+    if (wait != WAIT_OBJECT_0)
+        return HRESULT_FROM_WIN32(wait == WAIT_TIMEOUT ? WAIT_TIMEOUT : GetLastError());
+    const HRESULT result = g_diagnostics_site_ready.result.load(std::memory_order_acquire);
+    if (FAILED(result)) g_diagnostics_connection_requested = false;
+    return result;
+    } catch (...) { return winrt::to_hresult(); }
 }
 
 HRESULT ScheduleResumeTreeOnUi(const std::shared_ptr<UiCompletion> &completion) noexcept {
@@ -2358,6 +2402,10 @@ MwStatus FinishCleanup() noexcept {
         return MW_ERROR_DRAIN_PENDING;
     }
 
+    if (taskbar_diagnostics::RemoveCompositionGuard() != MW_OK) {
+        SetLastError(E_PENDING);
+        return MW_ERROR_DRAIN_PENDING;
+    }
     if (!g_entries.empty()) {
         const UiCompletionResult result =
             g_ui_lifecycle_operation.RunOrJoin(&ScheduleRestoreAllOnUi, kUiDispatchTimeoutMs);
@@ -2483,6 +2531,46 @@ MwStatus MW_CALL Stop() {
     return FinishCleanup();
 }
 } // namespace
+
+#ifdef MW_TASKBAR_ISOLATION_TESTING
+// Exercise the real diagnostics connection in an owned hidden XAML island.
+// HWND selection is excluded: the fixture never impersonates Shell_TrayWnd.
+extern "C" __declspec(dllexport) HRESULT __stdcall
+MwTaskbarTestStartOnHost(const MwHostApi* host, const char* settings, DWORD ui_thread) noexcept {
+    if (!mw_native::IsCompatibleHost(host) || g_active || g_cleanup_pending ||
+        g_start_operation || !g_call_gate.IsClosed()) return E_UNEXPECTED;
+    auto parsed = taskbar_config::ParseSettings(settings);
+    if (!parsed) return E_INVALIDARG;
+    g_ui_config = parsed.config;
+    g_pending_config = parsed.config;
+    g_host_api = host;
+    g_taskbar_thread = ui_thread;
+    g_live_variables = g_ui_config.variables;
+    ++g_ui_profile_revision;
+    g_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+    if (!g_call_gate.Open()) return E_UNEXPECTED;
+    g_active.store(true, std::memory_order_release);
+    SetLastError(S_OK);
+    g_start_operation_result.store(E_PENDING, std::memory_order_release);
+    unsigned thread_id = 0;
+    const auto thread = _beginthreadex(nullptr, 0, &StartDiagnosticsOperation,
+        nullptr, 0, &thread_id);
+    if (!thread) {
+        g_active.store(false, std::memory_order_release);
+        g_call_gate.Close();
+        g_host_api = nullptr;
+        return E_OUTOFMEMORY;
+    }
+    g_start_operation = reinterpret_cast<HANDLE>(thread);
+    return S_OK;
+}
+
+extern "C" __declspec(dllexport) HRESULT __stdcall MwTaskbarTestPollOnHost() noexcept {
+    HRESULT result = E_PENDING;
+    return ReapStartDiagnosticsOperation(&result) ? result : E_PENDING;
+}
+
+#endif
 
 #ifdef MW_TASKBAR_CALLBACK_TESTING
 HRESULT TestReusedObservation(const controls::Grid &grid) noexcept;
