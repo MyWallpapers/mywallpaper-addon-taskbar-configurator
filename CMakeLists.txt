@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MyWallpaperTaskbarConfigurator VERSION 0.1.9 LANGUAGES C CXX)
+project(MyWallpaperTaskbarConfigurator VERSION 0.1.10 LANGUAGES C CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Taskbar Configurator requires Windows x64 and MSVC")

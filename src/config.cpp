@@ -417,7 +417,13 @@ bool ParseAppearance(const Json& settings, Config* config, std::string* error) {
             }
             if (state.key() == "active") {
                 Rule subscription; subscription.selector.semantic = region.key();
-                subscription.state_group = "RunningIndicatorStates"; subscription.state = "ActiveRunningIndicator";
+                if (region.key() == "button") {
+                    subscription.state_group = "CommonStates";
+                    subscription.state = "ActiveNormal";
+                } else {
+                    subscription.state_group = "RunningIndicatorStates";
+                    subscription.state = "ActiveRunningIndicator";
+                }
                 config->rules.push_back(std::move(subscription));
             }
             for (auto property = state->begin(); property != state->end(); ++property) {

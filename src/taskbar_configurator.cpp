@@ -1291,6 +1291,17 @@ void ConfigurePointerHandlers(ElementEntry& entry) {
     entry.visual.Scale(numerics::float3{scale, scale, entry.original_scale.z});
 }
 
+bool IsActiveAppearanceState(std::string_view semantic,
+    std::wstring_view group_name, std::wstring_view state_name) noexcept {
+    if (semantic == "button") {
+        return group_name == L"CommonStates" &&
+            (state_name == L"ActiveNormal" || state_name == L"ActivePointerOver" ||
+             state_name == L"ActivePressed");
+    }
+    return semantic == "indicator" && group_name == L"RunningIndicatorStates" &&
+        state_name == L"ActiveRunningIndicator";
+}
+
 void BuildDirectProperties(ElementEntry& entry, const Config& config,
     std::vector<PropertyState>* desired) {
     if (!config.enabled) return;
@@ -1357,8 +1368,11 @@ void BuildDirectProperties(ElementEntry& entry, const Config& config,
             xaml::DependencyObject current = entry.element;
             for (unsigned depth = 0; current && depth < 32 && !active; ++depth) {
                 if (auto target = current.try_as<xaml::FrameworkElement>())
-                    for (const auto& group : xaml::VisualStateManager::GetVisualStateGroups(target))
-                        if (group.Name() == L"RunningIndicatorStates" && group.CurrentState() && group.CurrentState().Name() == L"ActiveRunningIndicator") active = true;
+                    for (const auto& group : xaml::VisualStateManager::GetVisualStateGroups(target)) {
+                        const auto state = group.CurrentState();
+                        if (state && IsActiveAppearanceState(entry.semantic, group.Name(), state.Name()))
+                            active = true;
+                    }
                 current = media::VisualTreeHelper::GetParent(current);
             }
         }
@@ -2403,6 +2417,117 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
         g_ui_config.appearance = Json{{"surface",Json{{"normal",Json{{"borderBrush","#FF4488FF"},{"borderThickness",3}}}}}};
         ApplyEntry(outline);
         if (!rectangle.Stroke() || rectangle.StrokeThickness() != 3 || FAILED(RestoreEntry(outline)) || rectangle.Stroke()) return E_FAIL;
+        g_ui_config = Config{};
+        stage = "consumer active appearance state transitions";
+        stage = "appearance fixture XAML parsing";
+        auto fixture = xaml::Markup::XamlReader::Load(
+            L"<ContentControl xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' "
+            L"xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>"
+            L"<ContentControl.Template>"
+            L"<ControlTemplate TargetType='ContentControl'>"
+            L"<Border x:Name='BackgroundElement'>"
+            L"<VisualStateManager.VisualStateGroups>"
+            L"<VisualStateGroup x:Name='CommonStates'>"
+            L"<VisualState x:Name='InactiveNormal'/><VisualState x:Name='ActiveNormal'/>"
+            L"<VisualState x:Name='ActivePointerOver'/><VisualState x:Name='ActivePressed'/>"
+            L"</VisualStateGroup></VisualStateManager.VisualStateGroups>"
+            L"</Border></ControlTemplate></ContentControl.Template>"
+            L"</ContentControl>").as<controls::ContentControl>();
+        stage = "appearance fixture template application";
+        fixture.ApplyTemplate();
+        fixture.Measure({100, 40});
+        fixture.Arrange({0, 0, 100, 40});
+        fixture.UpdateLayout();
+
+        std::function<xaml::FrameworkElement(xaml::DependencyObject, const wchar_t*)> find_named;
+        find_named = [&](xaml::DependencyObject current, const wchar_t* name) -> xaml::FrameworkElement {
+            if (auto element = current.try_as<xaml::FrameworkElement>()) {
+                const auto element_name = element.Name();
+                if (!element_name.empty() && std::wstring_view(element_name.c_str()) == name)
+                    return element;
+            }
+            for (int32_t index = 0; index < media::VisualTreeHelper::GetChildrenCount(current); ++index) {
+                if (auto found = find_named(media::VisualTreeHelper::GetChild(current, index), name))
+                    return found;
+            }
+            return nullptr;
+        };
+
+        stage = "appearance fixture named element lookup";
+        const auto template_root = find_named(fixture, L"BackgroundElement");
+        auto background = template_root.try_as<controls::Border>();
+        if (!template_root || !background)
+            winrt::throw_hresult(E_FAIL);
+        stage = "appearance fixture state group lookup";
+        xaml::VisualStateGroup common_states{nullptr};
+        for (const auto& group : xaml::VisualStateManager::GetVisualStateGroups(template_root)) {
+            if (group.Name() == L"CommonStates") {
+                common_states = group;
+                break;
+            }
+        }
+        if (!common_states)
+            winrt::throw_hresult(E_FAIL);
+
+        stage = "appearance fixture original values";
+        const media::SolidColorBrush original_background({255, 1, 2, 3});
+        background.Background(original_background);
+        background.Opacity(1.0);
+
+        ElementEntry appearance_entry;
+        appearance_entry.element = background;
+        appearance_entry.ui_element = background;
+        appearance_entry.type = "Windows.UI.Xaml.Controls.Border";
+        appearance_entry.name = "BackgroundElement";
+        appearance_entry.semantic = "button";
+        g_ui_config = Config{};
+        g_ui_config.appearance = Json{{"button", Json{
+            {"normal", Json{{"background", "#112233FF"}, {"opacity", 0.95}}},
+            {"active", Json{{"background", "#AA2200FF"}, {"opacity", 0.65}}},
+            {"hover", Json{{"background", "#00AA00FF"}}},
+            {"pressed", Json{{"background", "#0000AAFF"}}}
+        }}};
+
+        auto transition_and_apply = [&](const wchar_t* state_name, bool hover, bool pressed) {
+            appearance_entry.pointer_inside = hover;
+            appearance_entry.pointer_pressed = pressed;
+            if (!xaml::VisualStateManager::GoToState(fixture, state_name, false))
+                winrt::throw_hresult(E_FAIL);
+            const auto current_state = common_states.CurrentState();
+            if (!current_state || current_state.Name() != state_name)
+                winrt::throw_hresult(E_FAIL);
+            ApplyEntry(appearance_entry, false);
+        };
+        auto expect_appearance = [&](uint8_t red, uint8_t green, uint8_t blue, double opacity) {
+            const auto brush = background.Background().try_as<media::SolidColorBrush>();
+            if (!brush) winrt::throw_hresult(E_FAIL);
+            const auto color = brush.Color();
+            if (color.R != red || color.G != green || color.B != blue || color.A != 255 ||
+                std::abs(background.Opacity() - opacity) > 0.00001)
+                winrt::throw_hresult(E_FAIL);
+        };
+
+        stage = "active appearance state and hover/pressed precedence";
+        transition_and_apply(L"InactiveNormal", false, false);
+        expect_appearance(0x11, 0x22, 0x33, 0.95);
+        transition_and_apply(L"ActiveNormal", false, false);
+        expect_appearance(0xAA, 0x22, 0x00, 0.65);
+        transition_and_apply(L"ActivePointerOver", true, false);
+        expect_appearance(0x00, 0xAA, 0x00, 0.65);
+        transition_and_apply(L"ActivePressed", true, true);
+        expect_appearance(0x00, 0x00, 0xAA, 0.65);
+        transition_and_apply(L"InactiveNormal", false, false);
+        expect_appearance(0x11, 0x22, 0x33, 0.95);
+
+        stage = "active appearance original restoration";
+        if (FAILED(RestoreEntry(appearance_entry)) || HasTrackedState(appearance_entry) ||
+            background.Background() != original_background || background.Opacity() != 1.0)
+            winrt::throw_hresult(E_FAIL);
+
+        if (!IsActiveAppearanceState("indicator", L"RunningIndicatorStates", L"ActiveRunningIndicator") ||
+            IsActiveAppearanceState("button", L"RunningIndicatorStates", L"ActiveRunningIndicator") ||
+            IsActiveAppearanceState("indicator", L"CommonStates", L"ActiveNormal"))
+            winrt::throw_hresult(E_FAIL);
         g_ui_config = Config{};
         try {
             (void)taskbar_xaml::Resolve(rectangle, "Foreground", solid);
