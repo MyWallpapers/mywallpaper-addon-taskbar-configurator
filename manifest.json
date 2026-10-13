@@ -2,7 +2,7 @@
   "runtime": "native-v1",
   "name": "Taskbar Configurator",
   "description": "Compose native Windows taskbar styles, materials, visual states, layout and animations directly in MyWallpaper.",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "deviceSettingsVersion": "2",
   "settings": [
     {
