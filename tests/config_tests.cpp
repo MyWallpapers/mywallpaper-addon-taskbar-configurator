@@ -196,8 +196,10 @@ void TestConsumerMotion() {
     for(const auto& invalid: {Json{{"button",Json{{"hoverSize",9}}}},Json{{"button",Json{{"pressDurationMs",.5}}}},Json{{"surface",Json::object()}}}){
         settings["motionJson"]=invalid.dump(); Check(!ParseSettingsJson(settings),"invalid motion is rejected before Explorer receives it");
     }
-    auto settings_active=FullDefaults();settings_active["appearanceJson"]=R"({"indicator":{"active":{"background":{"kind":"solid","color":"#FF4488FF"}}}})";
-    auto active=ParseSettingsJson(settings_active);Check(static_cast<bool>(active) && active.config.rules.size()==1 && active.config.rules[0].state_group=="RunningIndicatorStates","consumer active state reuses native state subscriptions");
+    auto settings_active=FullDefaults();settings_active["appearanceJson"]=R"({"button":{"active":{"background":"#FF4488FF"}}})";
+    auto active=ParseSettingsJson(settings_active);Check(static_cast<bool>(active) && active.config.rules.size()==1 && active.config.rules[0].state_group=="CommonStates" && active.config.rules[0].state=="ActiveNormal","button active appearance subscribes to the foreground button state");
+    settings_active["appearanceJson"]=R"({"indicator":{"active":{"background":{"kind":"solid","color":"#FF4488FF"}}}})";
+    active=ParseSettingsJson(settings_active);Check(static_cast<bool>(active) && active.config.rules.size()==1 && active.config.rules[0].state_group=="RunningIndicatorStates" && active.config.rules[0].state=="ActiveRunningIndicator","indicator active appearance keeps the native running-indicator state");
 }
 } // namespace
 

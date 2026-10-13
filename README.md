@@ -1,10 +1,12 @@
 # MyWallpaper Taskbar Configurator
 
-This native-only MyWallpaper add-on configures the existing Windows 11 taskbar from MyWallpaper's add-on settings sidebar. It has no separate window or web page. Its companion uses the pinned MyWallpaper native engine to load the add-on DLL into the matching Explorer process. Visual behavior and configuration remain in this repository; the engine ABI and implementation are unchanged through version 0.1.9.
+This native-only MyWallpaper add-on configures the existing Windows 11 taskbar from MyWallpaper's add-on settings sidebar. It has no separate window or web page. Its companion uses the pinned MyWallpaper native engine to load the add-on DLL into the matching Explorer process. Visual behavior and configuration remain in this repository; the engine ABI and implementation are unchanged through version 0.1.10.
 
 Engine ABI v1 permits one active instance per target. Activate this prototype in only one layer. Device profiles are isolated by account, published add-on or development source, and settings-schema version. Compatible instances of this same add-on share their values; distinct add-ons targeting Explorer retain independent profiles. Shared values do not merge native sessions or arbitrate competing property writes.
 
 ## Configuration without themes
+
+Version 0.1.10 distinguishes the whole taskbar background from application buttons and requests the background as the inspector's initial selection. Hosts supporting the generic `defaultSelection` annotation honor that request without changing any saved value; older hosts retain their existing selection behavior. An active application button follows Windows `CommonStates`, including hover and pressed states; running indicators retain their separate indicator states. Existing settings IDs and device schema **2** are unchanged.
 
 Version 0.1.9 adds element/state inspectors, sparse appearance overrides, native linear/radial gradients, transparent gradient overlays on backdrop glass, and autonomous scrolling or ping-pong gradient animations. The existing 49 setting IDs and device schema **2** are retained, with `appearanceJson`, `motionJson` and `showAdvancedControls` added alongside them. Missing overrides inherit the existing profile; upgrading does not replace a user's saved colors or layer geometry.
 
@@ -14,7 +16,7 @@ Version 0.1.8 retains the 49 setting IDs and device settings schema **2**, and r
 
 The normal controls cover surface and button colors, opacity, rounding, dimensions, insets, position, activity indicators, Start, system tray and pointer animation parameters. Layout changes the content inside the existing taskbar window. Work-area reservation, other screen edges, auto-hide, flyout position, grouping and notification behavior remain Windows responsibilities. XAML dimensions use logical pixels (DIPs); large transformations can be clipped by the native taskbar window.
 
-The optional `advancedProfileJson` field offers **guided fields and raw JSON editing of the same string** in MyWallpaper versions supporting `editor` manifest metadata. Changes stay in a draft until Apply; Discard cancels them. Empty text removes custom rules while retaining the other settings. Older compatible text editors can still edit the JSON directly. The schema belongs to the add-on; MyWallpaper supplies generic controls and the existing persistence path.
+The optional `advancedProfileJson` field offers **guided fields and raw JSON editing of the same string** in MyWallpaper versions supporting `editor` manifest metadata. Current MyWallpaper versions apply valid edits automatically and retain the last valid configuration while an incomplete draft is edited. Empty text removes custom rules while retaining the other settings. Older compatible text editors can still edit the JSON directly. The schema belongs to the add-on; MyWallpaper supplies generic controls and the existing persistence path.
 
 ### Rules and values
 

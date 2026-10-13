@@ -57,7 +57,6 @@ const profile = object('Style rules', {
   animations:{type:'array',title:'Pointer animations',maxItems:128,items:object('Animation',{selector,hoverScale:number('Hover scale',0.5,1.5,1.06),pressScale:number('Pressed scale',0.5,1.5,0.96),hoverOpacity:number('Hover opacity',0,1,1),pressOpacity:number('Pressed opacity',0,1,0.92),hoverDurationMs:number('Hover duration (ms)',0,2000,180),pressDurationMs:number('Pressed duration (ms)',0,2000,90),easing:{type:'string',title:'Easing',enum:['linear','ease-out','ease-in-out'],default:'ease-out'}},['selector'],{summaryFields:['selector.semantic','selector.name']})},
 },['schemaVersion','rules'])
 profile.$defs={value,brush:brushValue}
-manifest.version = '0.1.8'
 manifest.description = 'Compose native Windows taskbar styles, materials, visual states, layout and animations directly in MyWallpaper.'
 manifest.presets = []
 for (const setting of manifest.settings) {

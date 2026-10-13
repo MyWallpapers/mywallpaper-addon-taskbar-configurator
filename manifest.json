@@ -2,7 +2,7 @@
   "runtime": "native-v1",
   "name": "Taskbar Configurator",
   "description": "Compose native Windows taskbar styles, materials, visual states, layout and animations directly in MyWallpaper.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "deviceSettingsVersion": "2",
   "settings": [
     {
@@ -17,7 +17,7 @@
       "id": "appearanceJson",
       "type": "textarea",
       "label": "Personnaliser un élément",
-      "description": "Choisissez l’élément et son état. Les modifications sont appliquées ensemble ; vos anciens réglages sont conservés.",
+      "description": "Choisissez la zone à personnaliser : le fond de toute la barre, ses boutons ou ses indicateurs. Chaque zone conserve ses propres réglages.",
       "default": "",
       "scope": "device",
       "editor": {
@@ -27,12 +27,13 @@
           "type": "object",
           "title": "Élément",
           "presentation": "inspector",
+          "defaultSelection": "surface",
           "default": {},
           "properties": {
             "surface": {
               "type": "object",
-              "title": "Barre",
-              "description": "Les effets sont appliqués à cet élément natif. Les dimensions et animations sont disponibles dans les sections ci-dessous.",
+              "title": "Fond de la barre",
+              "description": "Couleurs et effets du fond sur toute la longueur de la barre des tâches.",
               "presentation": "inspector",
               "properties": {
                 "normal": {
@@ -47,8 +48,8 @@
             },
             "button": {
               "type": "object",
-              "title": "Applications",
-              "description": "Les effets sont appliqués à cet élément natif. Les dimensions et animations sont disponibles dans les sections ci-dessous.",
+              "title": "Boutons d’application",
+              "description": "Couleurs et effets des boutons des applications épinglées ou ouvertes.",
               "presentation": "inspector",
               "properties": {
                 "normal": {
@@ -75,8 +76,8 @@
                 },
                 "active": {
                   "$ref": "#/$defs/buttonStyle",
-                  "title": "Application active",
-                  "description": "Apparence de l’application au premier plan, lorsque Windows expose cet état.",
+                  "title": "Bouton de l’application active",
+                  "description": "Ce réglage suit le bouton de l’application au premier plan, y compris au survol et pendant le clic.",
                   "inheritPropertiesFrom": [
                     "button.normal"
                   ]
