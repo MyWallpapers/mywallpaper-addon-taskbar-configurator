@@ -1,10 +1,16 @@
 # MyWallpaper Taskbar Configurator
 
-This native-only MyWallpaper add-on configures the existing Windows 11 taskbar from MyWallpaper's add-on settings sidebar. It has no separate window or web page. Its companion uses the pinned MyWallpaper native engine to load the add-on DLL into the matching Explorer process. Visual behavior and configuration remain in this repository; the engine ABI and implementation are unchanged through version 0.1.11.
+This native-only MyWallpaper add-on configures the existing Windows 11 taskbar from MyWallpaper's add-on settings sidebar. It has no separate window or web page. Its companion uses the pinned MyWallpaper native engine to load the add-on DLL into the matching Explorer process. Visual behavior and configuration remain in this repository; the engine ABI and implementation are unchanged through version 0.1.12.
 
 Engine ABI v1 permits one active instance per target. Activate this prototype in only one layer. Device profiles are isolated by account, published add-on or development source, and settings-schema version. Compatible instances of this same add-on share their values; distinct add-ons targeting Explorer retain independent profiles. Shared values do not merge native sessions or arbitrate competing property writes.
 
 ## Configuration without themes
+
+Version 0.1.12 waits for the asynchronous XAML `SetSite` callback after Windows accepts a diagnostics connection. A single resident completion event provides a bounded wait; a pending connection is reused rather than injected again. The observer, snapshot and saved settings contracts remain unchanged.
+
+During the first `AdviseVisualTreeChange` only, the add-on uses the existing SDK's hooks to suppress Windows' optional Composition diagnostic walker. Two registry-read hooks return `DisableCompositionDiag=1` exclusively for the enumeration thread and its matching debug-key handle. They never write the registry, forward ordinary reads, and are removed after enumeration, including failure cleanup. The engine retains two bypassing bridges for safe callback continuations; these are reused and do not grow with stop/start cycles. This is an add-on compatibility measure, not a new engine API or a global Windows setting. The corresponding Windows diagnostic hazard is described in [the Taskbar Styler source](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/windows-11-taskbar-styler.wh.cpp); the implementation here uses this repository's own SDK and cleanup contract.
+
+The isolated observer test hosts two hidden XAML islands on separate UI threads, uses the real Windows diagnostics connection and pinned hook backend, replaces styled elements between cycles, and verifies original-value restoration and empty active resource counters at every stop. It never impersonates Explorer's taskbar window. These tests qualify that contract; visual correctness and stability in Explorer require separate runtime checks on the target Windows build.
 
 Version 0.1.10 distinguishes the whole taskbar background from application buttons and requests the background as the inspector's initial selection. Hosts supporting the generic `defaultSelection` annotation honor that request without changing any saved value; older hosts retain their existing selection behavior. An active application button follows Windows `CommonStates`, including hover and pressed states; running indicators retain their separate indicator states. Existing settings IDs and device schema **2** are unchanged.
 

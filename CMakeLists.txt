@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MyWallpaperTaskbarConfigurator VERSION 0.1.11 LANGUAGES C CXX)
+project(MyWallpaperTaskbarConfigurator VERSION 0.1.12 LANGUAGES C CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Taskbar Configurator requires Windows x64 and MSVC")
@@ -21,6 +21,7 @@ endif()
 add_subdirectory("${MW_NATIVE_ENGINE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/native-engine")
 
 add_library(taskbar_configurator SHARED
+    src/composition_diagnostics_guard.cpp
     src/config.cpp
     src/profile_values.cpp
     src/xaml_values.cpp
@@ -56,6 +57,7 @@ enable_testing()
 add_test(NAME taskbar_config_contract COMMAND taskbar_config_tests "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json")
 
 add_executable(taskbar_visual_tree_callback_tests
+    src/composition_diagnostics_guard.cpp
     src/config.cpp
     src/profile_values.cpp
     src/xaml_values.cpp
@@ -83,3 +85,46 @@ add_test(NAME taskbar_rich_xaml_contract
     COMMAND taskbar_visual_tree_callback_tests --rich-xaml)
 target_link_options(taskbar_visual_tree_callback_tests PRIVATE
     "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/tests/xaml-test.manifest")
+
+add_executable(taskbar_composition_diagnostics_tests
+    src/composition_diagnostics_guard.cpp
+    tests/composition_diagnostics_guard_tests.cpp
+    "${MW_NATIVE_ENGINE_SOURCE_DIR}/native/resident_hooks.cpp")
+target_include_directories(taskbar_composition_diagnostics_tests PRIVATE
+    include "${MW_NATIVE_ENGINE_SOURCE_DIR}/native")
+target_link_libraries(taskbar_composition_diagnostics_tests PRIVATE
+    MyWallpaperNativeEngine::SDK mw_native_hook_backend advapi32)
+target_compile_options(taskbar_composition_diagnostics_tests PRIVATE
+    /utf-8 /W4 /permissive- /EHsc /Zc:preprocessor /Brepro /experimental:deterministic
+    "/pathmap:${CMAKE_CURRENT_SOURCE_DIR}=.")
+add_test(NAME taskbar_composition_diagnostics_contract
+    COMMAND taskbar_composition_diagnostics_tests)
+
+add_library(taskbar_observer_fixture SHARED
+    src/config.cpp src/profile_values.cpp src/xaml_values.cpp
+    src/composition_diagnostics_guard.cpp src/taskbar_configurator.cpp
+    src/taskbar_configurator.def)
+target_compile_definitions(taskbar_observer_fixture PRIVATE MW_TASKBAR_ISOLATION_TESTING)
+target_include_directories(taskbar_observer_fixture PRIVATE include)
+target_link_libraries(taskbar_observer_fixture PRIVATE
+    MyWallpaperNativeEngine::SDK windowsapp shcore ole32 oleaut32 user32)
+target_compile_options(taskbar_observer_fixture PRIVATE
+    /utf-8 /W4 /permissive- /EHsc /Zc:preprocessor /Brepro /experimental:deterministic
+    "/pathmap:${CMAKE_CURRENT_SOURCE_DIR}=.")
+
+add_executable(taskbar_xaml_observer_tests tests/xaml_observer_tests.cpp
+    "${MW_NATIVE_ENGINE_SOURCE_DIR}/native/resident_hooks.cpp")
+target_include_directories(taskbar_xaml_observer_tests PRIVATE
+    include "${MW_NATIVE_ENGINE_SOURCE_DIR}/native")
+target_link_libraries(taskbar_xaml_observer_tests PRIVATE
+    MyWallpaperNativeEngine::SDK mw_native_hook_backend windowsapp user32
+    ole32 advapi32 CoreMessaging)
+target_compile_options(taskbar_xaml_observer_tests PRIVATE
+    /utf-8 /W4 /permissive- /EHsc /Zc:preprocessor /Brepro /experimental:deterministic
+    "/pathmap:${CMAKE_CURRENT_SOURCE_DIR}=.")
+target_link_options(taskbar_xaml_observer_tests PRIVATE
+    "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/tests/xaml-test.manifest")
+add_dependencies(taskbar_xaml_observer_tests taskbar_observer_fixture)
+add_test(NAME taskbar_xaml_observer_contract COMMAND taskbar_xaml_observer_tests
+    "$<TARGET_FILE:taskbar_observer_fixture>")
+set_tests_properties(taskbar_xaml_observer_contract PROPERTIES TIMEOUT 25)
