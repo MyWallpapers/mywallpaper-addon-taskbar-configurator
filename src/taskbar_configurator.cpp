@@ -2701,6 +2701,20 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
         stage = "compatible native property owners";
         const Json solid{{"kind", "solid"}, {"color", "#11223380"}};
         const auto grid_background = taskbar_xaml::Resolve(grid, "Background", solid);
+        stage = "typed brush values from string setters";
+        taskbar_xaml::TestPropertyProbeIsolation();
+        controls::ContentControl brush_control;
+        const auto typed_foreground = taskbar_xaml::Resolve(brush_control, "Foreground", "#123456FF");
+        const auto typed_border = taskbar_xaml::Resolve(brush_control, "BorderBrush", "#123456FF");
+        if (!typed_foreground.value.try_as<media::Brush>() ||
+            !typed_border.value.try_as<media::Brush>())
+            winrt::throw_hresult(E_NOINTERFACE);
+        bool rejected_non_brush = false;
+        try {
+            (void)taskbar_xaml::Resolve(brush_control, "Foreground",
+                Json{{"xaml", "<x:String>not a brush</x:String>"}});
+        } catch (...) { rejected_non_brush = FAILED(winrt::to_hresult()); }
+        if (!rejected_non_brush) winrt::throw_hresult(E_FAIL);
         if (grid_background.property != controls::Panel::BackgroundProperty())
             return E_FAIL;
         grid.SetValue(grid_background.property, grid_background.value);

@@ -24,6 +24,7 @@ void ClearCache();
 bool TryUpdateBrush(const winrt::Windows::Foundation::IInspectable& brush,
                     const nlohmann::json& previous, const nlohmann::json& next);
 #ifdef MW_TASKBAR_CALLBACK_TESTING
+void TestPropertyProbeIsolation();
 void TestBlur(winrt::Windows::UI::Composition::Compositor const &compositor,
               nlohmann::json const &settings);
 void TestMaterialUpdates(winrt::Windows::UI::Composition::Visual const& host);
