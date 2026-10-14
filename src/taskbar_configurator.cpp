@@ -66,8 +66,20 @@ namespace numerics = winrt::Windows::Foundation::Numerics;
 using Json = nlohmann::json;
 using taskbar_config::Config;
 
-constexpr GUID kDiagnosticsClass = {0x04f4a6b7, 0x47c8, 0x4c41,
-    {0x9a, 0x90, 0x57, 0x5c, 0x89, 0x34, 0xe2, 0x61}};
+GUID g_diagnostics_class{};
+std::once_flag g_diagnostics_class_once;
+HRESULT g_diagnostics_class_result = E_UNEXPECTED;
+
+HRESULT EnsureDiagnosticsClass() noexcept {
+    // XAML caches factories by CLSID. A loaded image needs its own identity;
+    // reuse it for every Start/Stop of that image.
+    try {
+        std::call_once(g_diagnostics_class_once, [] {
+            g_diagnostics_class_result = CoCreateGuid(&g_diagnostics_class);
+        });
+        return g_diagnostics_class_result;
+    } catch (...) { return winrt::to_hresult(); }
+}
 constexpr DWORD kUiDispatchTimeoutMs = 1200;
 constexpr DWORD kDrainTimeoutMs = 250;
 constexpr DWORD kDiagnosticsStartupTimeoutMs = 5000;
@@ -401,6 +413,20 @@ void DecrementDiagnostic(uint64_t* field) noexcept {
 void SetLastError(HRESULT error) noexcept {
     InterlockedExchange64(&MwTaskbarConfiguratorDiagnosticsBlock.lastError,
         static_cast<LONG64>(error));
+}
+
+template<typename Callback>
+HRESULT RunUiCallback(Callback&& callback) noexcept {
+    // XAML treats an HRESULT escaping a dispatched/event callback as an
+    // unhandled application error. Keep it in our diagnostics instead.
+    try {
+        callback();
+        return S_OK;
+    } catch (...) {
+        const HRESULT error = winrt::to_hresult();
+        SetLastError(error);
+        return error;
+    }
 }
 
 struct WorkerCounter final {
@@ -1298,47 +1324,55 @@ void ConfigurePointerHandlers(ElementEntry& entry) {
     const auto handle = entry.handle;
     HRESULT result = RegisterTrackedHandler(entry.entered_handler, entry.entered_token, [&] {
         return entry.element.PointerEntered([handle](auto const&, auto const&) {
-            auto guard = g_call_gate.Enter();
-            if (!guard) return;
-            const auto found = g_entries.find(handle);
-            if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
-            found->second.pointer_inside = true;
-            if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
-            Animate(found->second, found->second.pointer_pressed);
+            (void)RunUiCallback([&] {
+                auto guard = g_call_gate.Enter();
+                if (!guard) return;
+                const auto found = g_entries.find(handle);
+                if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
+                found->second.pointer_inside = true;
+                if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
+                Animate(found->second, found->second.pointer_pressed);
+            });
         });
     });
     if (SUCCEEDED(result)) result = RegisterTrackedHandler(entry.exited_handler, entry.exited_token, [&] {
         return entry.element.PointerExited([handle](auto const&, auto const&) {
-            auto guard = g_call_gate.Enter();
-            if (!guard) return;
-            const auto found = g_entries.find(handle);
-            if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
-            found->second.pointer_inside = false;
-            found->second.pointer_pressed = false;
-            if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
-            Animate(found->second, false);
+            (void)RunUiCallback([&] {
+                auto guard = g_call_gate.Enter();
+                if (!guard) return;
+                const auto found = g_entries.find(handle);
+                if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
+                found->second.pointer_inside = false;
+                found->second.pointer_pressed = false;
+                if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
+                Animate(found->second, false);
+            });
         });
     });
     if (SUCCEEDED(result)) result = RegisterTrackedHandler(entry.pressed_handler, entry.pressed_token, [&] {
         return entry.element.PointerPressed([handle](auto const&, auto const&) {
-            auto guard = g_call_gate.Enter();
-            if (!guard) return;
-            const auto found = g_entries.find(handle);
-            if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
-            found->second.pointer_pressed = true;
-            if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
-            Animate(found->second, true);
+            (void)RunUiCallback([&] {
+                auto guard = g_call_gate.Enter();
+                if (!guard) return;
+                const auto found = g_entries.find(handle);
+                if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
+                found->second.pointer_pressed = true;
+                if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
+                Animate(found->second, true);
+            });
         });
     });
     if (SUCCEEDED(result)) result = RegisterTrackedHandler(entry.released_handler, entry.released_token, [&] {
         return entry.element.PointerReleased([handle](auto const&, auto const&) {
-            auto guard = g_call_gate.Enter();
-            if (!guard) return;
-            const auto found = g_entries.find(handle);
-            if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
-            found->second.pointer_pressed = false;
-            if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
-            Animate(found->second, false);
+            (void)RunUiCallback([&] {
+                auto guard = g_call_gate.Enter();
+                if (!guard) return;
+                const auto found = g_entries.find(handle);
+                if (found == g_entries.end() || !found->second.pointer_animation_enabled) return;
+                found->second.pointer_pressed = false;
+                if (g_ui_config.appearance.contains(found->second.semantic)) ApplyEntry(found->second, false);
+                Animate(found->second, false);
+            });
         });
     });
     if (FAILED(result)) {
@@ -1489,12 +1523,14 @@ void QueueDynamicApply() noexcept {
         g_dynamic_queued = true;
         g_dispatcher.get().RunAsync(
             winrt::Windows::UI::Core::CoreDispatcherPriority::Normal, [generation] {
-                auto guard = g_call_gate.Enter();
-                if (generation != g_lifecycle_generation.load(std::memory_order_acquire))
-                    return;
-                g_dynamic_queued = false;
-                if (guard)
-                    ApplyAllOnUi();
+                (void)RunUiCallback([&] {
+                    auto guard = g_call_gate.Enter();
+                    if (generation != g_lifecycle_generation.load(std::memory_order_acquire))
+                        return;
+                    g_dynamic_queued = false;
+                    if (guard)
+                        ApplyAllOnUi();
+                });
             });
     } catch (...) {
         g_dynamic_queued = false;
@@ -1593,11 +1629,13 @@ void ConfigureRuleHandlers(ElementEntry &entry) {
         }
         if (!g_ui_config.resources.empty() || !g_ui_config.rules.empty()) {
             entry.theme_token = entry.element.ActualThemeChanged([](auto const &, auto const &) {
-                auto guard = g_call_gate.Enter();
-                if (guard) {
-                    taskbar_xaml::ClearCache();
-                    QueueDynamicApply();
-                }
+                (void)RunUiCallback([&] {
+                    auto guard = g_call_gate.Enter();
+                    if (guard) {
+                        taskbar_xaml::ClearCache();
+                        QueueDynamicApply();
+                    }
+                });
             });
             entry.theme_handler = true;
         }
@@ -1771,58 +1809,63 @@ bool ScheduleSettingsApply(const std::shared_ptr<Config>& config) {
         if (g_dispatcher) dispatcher = g_dispatcher.get();
     }
     if (!dispatcher) {
+        // Keep the accepted latest configuration until the first taskbar
+        // element supplies its UI dispatcher.
         (void)ClearApplyQueuedForGeneration(generation);
-        return false;
+        return true;
     }
     try {
         dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
             [generation] {
-                auto guard = g_call_gate.Enter();
-                {
-                    std::lock_guard lock(g_settings_mutex);
-                    if (generation != g_lifecycle_generation.load(std::memory_order_acquire)) return;
-                    if (!guard) {
-                        g_apply_queued = false;
-                        return;
-                    }
-                }
-                for (;;) {
-                    Config next;
-                    uint64_t revision = 0;
+                const HRESULT result = RunUiCallback([&] {
+                    auto guard = g_call_gate.Enter();
                     {
                         std::lock_guard lock(g_settings_mutex);
-                        next = g_pending_config;
-                        revision = g_pending_revision;
-                    }
-                    const auto previous_appearance = g_ui_config.appearance;
-                    auto base_previous = g_ui_config, base_next = next;
-                    base_previous.appearance = base_next.appearance = Json::object();
-                    const bool appearance_only = base_previous == base_next;
-                    if (g_ui_config.enabled != next.enabled || g_ui_config.rules != next.rules ||
-                        g_ui_config.captures != next.captures || g_ui_config.resources != next.resources)
-                        ++g_ui_profile_revision;
-                    g_ui_config = std::move(next);
-                    g_reported_rules.clear();
-                    if (appearance_only) {
-                        SetLastError(S_OK);
-                        for (auto& [handle, entry] : g_entries) {
-                            (void)handle;
-                            const auto before = previous_appearance.find(entry.semantic);
-                            const auto after = g_ui_config.appearance.find(entry.semantic);
-                            if ((before == previous_appearance.end()) != (after == g_ui_config.appearance.end()) ||
-                                (before != previous_appearance.end() && after != g_ui_config.appearance.end() && *before != *after))
-                                ApplyEntry(entry, false);
-                        }
-                        IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.settingsApplied);
-                    } else ApplyAllOnUi();
-                    std::lock_guard lock(g_settings_mutex);
-                    if (revision == g_pending_revision) {
-                        if (generation == g_lifecycle_generation.load(std::memory_order_acquire)) {
+                        if (generation != g_lifecycle_generation.load(std::memory_order_acquire)) return;
+                        if (!guard) {
                             g_apply_queued = false;
+                            return;
                         }
-                        return;
                     }
-                }
+                    for (;;) {
+                        Config next;
+                        uint64_t revision = 0;
+                        {
+                            std::lock_guard lock(g_settings_mutex);
+                            next = g_pending_config;
+                            revision = g_pending_revision;
+                        }
+                        const auto previous_appearance = g_ui_config.appearance;
+                        auto base_previous = g_ui_config, base_next = next;
+                        base_previous.appearance = base_next.appearance = Json::object();
+                        const bool appearance_only = base_previous == base_next;
+                        if (g_ui_config.enabled != next.enabled || g_ui_config.rules != next.rules ||
+                            g_ui_config.captures != next.captures || g_ui_config.resources != next.resources)
+                            ++g_ui_profile_revision;
+                        g_ui_config = std::move(next);
+                        g_reported_rules.clear();
+                        if (appearance_only) {
+                            SetLastError(S_OK);
+                            for (auto& [handle, entry] : g_entries) {
+                                (void)handle;
+                                const auto before = previous_appearance.find(entry.semantic);
+                                const auto after = g_ui_config.appearance.find(entry.semantic);
+                                if ((before == previous_appearance.end()) != (after == g_ui_config.appearance.end()) ||
+                                    (before != previous_appearance.end() && after != g_ui_config.appearance.end() && *before != *after))
+                                    ApplyEntry(entry, false);
+                            }
+                            IncrementDiagnostic(&MwTaskbarConfiguratorDiagnosticsBlock.settingsApplied);
+                        } else ApplyAllOnUi();
+                        std::lock_guard lock(g_settings_mutex);
+                        if (revision == g_pending_revision) {
+                            if (generation == g_lifecycle_generation.load(std::memory_order_acquire)) {
+                                g_apply_queued = false;
+                            }
+                            return;
+                        }
+                    }
+                });
+                if (FAILED(result)) (void)ClearApplyQueuedForGeneration(generation);
             });
         return true;
     } catch (...) {
@@ -1879,6 +1922,28 @@ void Classify(ElementEntry& entry) {
 extern "C" void WINAPI MwTaskbarTestRecordForbiddenBstrFree(BSTR) noexcept;
 #define SysFreeString MwTaskbarTestRecordForbiddenBstrFree
 #endif
+
+void CaptureUiDispatcher(const xaml::FrameworkElement& framework) {
+    bool first = false;
+    {
+        std::lock_guard lock(g_dispatcher_mutex);
+        if (!g_dispatcher) {
+            const auto dispatcher = framework.Dispatcher();
+            if (dispatcher) {
+                g_dispatcher = winrt::agile_ref(dispatcher);
+                first = true;
+            }
+        }
+    }
+    if (first) {
+        std::lock_guard lock(g_settings_mutex);
+        if (g_pending_revision != 0) {
+            g_ui_config = g_pending_config;
+            g_live_variables = g_ui_config.variables;
+            ++g_ui_profile_revision;
+        }
+    }
+}
 
 struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
     IVisualTreeServiceCallback2> {
@@ -1990,14 +2055,7 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher,
         entry.type = ToUtf8(own_type);
         entry.ancestor_names = std::move(ancestor_names);
         Classify(entry);
-        {
-            std::lock_guard lock(g_dispatcher_mutex);
-            if (!g_dispatcher) {
-                const auto dispatcher = framework.Dispatcher();
-                if (dispatcher)
-                    g_dispatcher = winrt::agile_ref(dispatcher);
-            }
-        }
+        CaptureUiDispatcher(framework);
         auto [it, inserted] = g_entries.emplace(handle, std::move(entry));
         if (inserted) {
             ApplyEntry(it->second);
@@ -2184,6 +2242,8 @@ HRESULT AdviseTree() noexcept {
 
 HRESULT ConnectDiagnostics() noexcept {
     try {
+    const HRESULT class_result = EnsureDiagnosticsClass();
+    if (FAILED(class_result)) return class_result;
     if (g_diagnostics_site_ready.result.load(std::memory_order_acquire) == S_OK)
         return S_OK;
     if (!g_diagnostics_site_ready.event) return E_OUTOFMEMORY;
@@ -2215,7 +2275,7 @@ HRESULT ConnectDiagnostics() noexcept {
                 WorkerCounter worker_counter;
                 std::thread worker([&] {
                     result = initialize(endpoint.c_str(), GetCurrentProcessId(), nullptr,
-                        path.c_str(), kDiagnosticsClass, nullptr);
+                        path.c_str(), g_diagnostics_class, nullptr);
                 });
                 worker.join();
             }
@@ -2584,6 +2644,27 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
         auto manager=xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
         {
         controls::Grid grid;
+        stage="latest settings received before taskbar dispatcher";
+        {
+            Config first, latest;
+            first.surface_width = 420;
+            latest.surface_width = 740;
+            if (!ScheduleSettingsApply(std::make_shared<Config>(first)) ||
+                !ScheduleSettingsApply(std::make_shared<Config>(latest)))
+                winrt::throw_hresult(E_FAIL);
+            CaptureUiDispatcher(grid);
+            if (g_ui_config.surface_width != 740 || g_apply_queued)
+                winrt::throw_hresult(E_FAIL);
+            const HRESULT identity = EnsureDiagnosticsClass();
+            const GUID image_identity = g_diagnostics_class;
+            if (FAILED(identity) || FAILED(EnsureDiagnosticsClass()) ||
+                image_identity != g_diagnostics_class || image_identity == GUID{})
+                winrt::throw_hresult(E_FAIL);
+            g_ui_config = Config{};
+            g_pending_config = Config{};
+            g_pending_revision = 0;
+            g_dispatcher = {};
+        }
         stage="style application";
         ElementEntry entry;entry.element=grid;entry.ui_element=grid;entry.type="Windows.UI.Xaml.Controls.Grid";
         controls::ColumnDefinition original;
@@ -2620,6 +2701,20 @@ extern "C" HRESULT __stdcall MwTaskbarTestRichXaml() noexcept {
         stage = "compatible native property owners";
         const Json solid{{"kind", "solid"}, {"color", "#11223380"}};
         const auto grid_background = taskbar_xaml::Resolve(grid, "Background", solid);
+        stage = "typed brush values from string setters";
+        taskbar_xaml::TestPropertyProbeIsolation();
+        controls::ContentControl brush_control;
+        const auto typed_foreground = taskbar_xaml::Resolve(brush_control, "Foreground", "#123456FF");
+        const auto typed_border = taskbar_xaml::Resolve(brush_control, "BorderBrush", "#123456FF");
+        if (!typed_foreground.value.try_as<media::Brush>() ||
+            !typed_border.value.try_as<media::Brush>())
+            winrt::throw_hresult(E_NOINTERFACE);
+        bool rejected_non_brush = false;
+        try {
+            (void)taskbar_xaml::Resolve(brush_control, "Foreground",
+                Json{{"xaml", "<x:String>not a brush</x:String>"}});
+        } catch (...) { rejected_non_brush = FAILED(winrt::to_hresult()); }
+        if (!rejected_non_brush) winrt::throw_hresult(E_FAIL);
         if (grid_background.property != controls::Panel::BackgroundProperty())
             return E_FAIL;
         grid.SetValue(grid_background.property, grid_background.value);
@@ -3233,6 +3328,17 @@ extern "C" HRESULT __stdcall MwTaskbarTestLateCleanupCompletion(
     return S_OK;
 }
 
+extern "C" HRESULT __stdcall MwTaskbarTestUiCallbackIsolation() noexcept {
+    const auto previous_error = MwTaskbarConfiguratorDiagnosticsBlock.lastError;
+    const HRESULT failed = RunUiCallback([] { winrt::throw_hresult(E_NOINTERFACE); });
+    if (failed != E_NOINTERFACE ||
+        MwTaskbarConfiguratorDiagnosticsBlock.lastError != E_NOINTERFACE) return E_FAIL;
+    bool resumed = false;
+    const HRESULT next = RunUiCallback([&] { resumed = true; });
+    SetLastError(static_cast<HRESULT>(previous_error));
+    return next == S_OK && resumed ? S_OK : E_FAIL;
+}
+
 extern "C" HRESULT __stdcall MwTaskbarTestStaleApplyGeneration(
     uint32_t* stale_preserved_queue, uint32_t* current_cleared_queue) noexcept {
     if (!stale_preserved_queue || !current_cleared_queue) return E_POINTER;
@@ -3268,7 +3374,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall MwTaskbarConfiguratorGetClass
     REFCLSID clsid, REFIID iid, void** result) {
     if (!result) return E_POINTER;
     *result = nullptr;
-    if (clsid != kDiagnosticsClass) return CLASS_E_CLASSNOTAVAILABLE;
+    if (clsid != g_diagnostics_class) return CLASS_E_CLASSNOTAVAILABLE;
     try { return winrt::make_self<DiagnosticsFactory>()->QueryInterface(iid, result); }
     catch (...) { return winrt::to_hresult(); }
 }

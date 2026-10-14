@@ -38,6 +38,7 @@ extern "C" HRESULT __stdcall MwTaskbarTestLateCleanupCompletion(
     uint32_t* map_reads_after_completion, uint32_t* diagnostics_reads,
     uint32_t* start_allowed_before_completion,
     uint32_t* start_allowed_after_completion) noexcept;
+extern "C" HRESULT __stdcall MwTaskbarTestUiCallbackIsolation() noexcept;
 extern "C" HRESULT __stdcall MwTaskbarTestStaleApplyGeneration(
     uint32_t* stale_preserved_queue, uint32_t* current_cleared_queue) noexcept;
 extern "C" HRESULT __stdcall MwTaskbarTestRotationAndAutoDimension() noexcept;
@@ -191,6 +192,11 @@ int wmain(int argc, wchar_t** argv) {
             << L", start-allowed before/after=" << start_allowed_before_completion
             << L"/" << start_allowed_after_completion << L'\n';
         return 6;
+    }
+
+    if (MwTaskbarTestUiCallbackIsolation() != S_OK) {
+        std::wcerr << L"UI callback error escaped or prevented the next callback\n";
+        return 10;
     }
 
     uint32_t stale_preserved_queue = 0;

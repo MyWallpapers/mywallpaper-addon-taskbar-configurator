@@ -447,12 +447,18 @@ std::wstring Document(std::string_view type, const std::string &property, const 
         "xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"";
     if (dot != type.npos)
         xml += " xmlns:target=\"using:" + taskbar_config::XmlEscape(type.substr(0, dot)) + "\"";
-    xml += "><Style TargetType=\"" + tag + "\"><Setter Property=\"" +
+    // This dictionary is a property probe, never an implicit shell style.
+    xml += "><Style x:Key=\"MyWallpaperPropertyProbe\" TargetType=\"" + tag + "\"><Setter Property=\"" +
            taskbar_config::XmlEscape(property) + "\"";
-    const bool color = property == "Background" || property == "Foreground" || property == "Fill" ||
-                       property == "Stroke" || property.ends_with("Brush") ||
-                       property.ends_with("Color");
-    const auto text = taskbar_config::XamlValueMarkup(value, color);
+    const bool brush = property == "Background" || property == "Foreground" ||
+                       property == "Fill" || property == "Stroke" || property.ends_with("Brush");
+    const bool color = brush || property.ends_with("Color");
+    // Custom shell metadata can leave a shorthand Setter.Value as a string.
+    // An explicit object is a Brush even before a style is applied to a control.
+    const Json typed_value = brush && value.is_string() &&
+        !value.get_ref<const std::string&>().starts_with('{')
+        ? Json{{"kind", "solid"}, {"color", value}} : value;
+    const auto text = taskbar_config::XamlValueMarkup(typed_value, color);
     if (!text.empty() && text.front() == '<')
         xml += "><Setter.Value>" + text + "</Setter.Value></Setter>";
     else
@@ -464,6 +470,21 @@ std::wstring Document(std::string_view type, const std::string &property, const 
 void ClearCache() {
     cache.clear();
 }
+#ifdef MW_TASKBAR_CALLBACK_TESTING
+void TestPropertyProbeIsolation() {
+    auto dictionary = xaml::Markup::XamlReader::Load(
+        Document("Windows.UI.Xaml.Controls.ContentControl", "Foreground", "#123456FF"))
+        .as<xaml::ResourceDictionary>();
+    const auto key = winrt::box_value(winrt::hstring(L"MyWallpaperPropertyProbe"));
+    if (dictionary.Size() != 1 || !dictionary.HasKey(key)) winrt::throw_hresult(E_FAIL);
+    const auto style = dictionary.Lookup(key).as<xaml::Style>();
+    const auto brush = style.Setters().GetAt(0).as<xaml::Setter>().Value()
+        .as<media::SolidColorBrush>();
+    const auto color = brush.Color();
+    if (color.R != 0x12 || color.G != 0x34 || color.B != 0x56 || color.A != 255)
+        winrt::throw_hresult(E_FAIL);
+}
+#endif
 bool TryUpdateBrush(const foundation::IInspectable& value, const Json& previous, const Json& next) {
     if (!previous.is_object() || !next.is_object() || previous.value("kind", "") != next.value("kind", "")) return false;
     auto brush = value.try_as<media::XamlCompositionBrushBase>(); if (!brush) return false;
@@ -584,6 +605,11 @@ Value Resolve(const xaml::FrameworkElement &element, std::string_view name, cons
                 auto host = xaml::Hosting::ElementCompositionPreview::GetElementVisual(element);
                 result.value = value.value("kind", "") == "gradient" ? winrt::make<GradientBrush>(host, value).as<foundation::IInspectable>() : winrt::make<BlurBrush>(compositor, value, host).as<foundation::IInspectable>();
             }
+            const bool brush_property = property == "Background" || property == "Foreground" ||
+                property == "Fill" || property == "Stroke" || property.ends_with("Brush");
+            if (brush_property && !value.is_null() && result.value &&
+                !result.value.try_as<media::Brush>())
+                winrt::throw_hresult(E_INVALIDARG);
             if (cache.size() >= 1024)
                 cache.clear();
             if (!custom) cache.emplace(key, result);
